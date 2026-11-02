@@ -1,11 +1,38 @@
-<div align="center">
+# InnoTector Care - AI Smart Triage & Hospital Queue
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+ระบบคัดกรองอาการอัจฉริยะ (AI Smart Triage) และจองคิวโรงพยาบาลแบบเรียลไทม์ พร้อมแดชบอร์ดสุขภาพส่วนบุคคล
 
-  <h1>Built with AI Studio</h2>
+## 🛠 วิธีติดตั้งและรันโปรเจกต์ (Getting Started)
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+1. **ติดตั้ง Dependencies:**
+   ```bash
+   npm install
+   ```
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+2. **ตั้งค่า Environment Variables:**
+   คัดลอกไฟล์ `.env.example` เป็น `.env`
+   ```bash
+   cp .env.example .env
+   ```
+   ใส่ `GEMINI_API_KEY` หากต้องการใช้งาน AI ฟีเจอร์
 
-</div>
+3. **รันเซิร์ฟเวอร์สำหรับการพัฒนา (Development):**
+   ```bash
+   npm run dev
+   ```
+   เปิดเบราว์เซอร์ที่ [http://localhost:3000](http://localhost:3000)
+
+4. **บิลด์สำหรับ Production:**
+   ```bash
+   npm run build
+   npm run preview
+   ```
+
+## 📱 เทคโนโลยีที่ใช้
+- **React 19** + **TypeScript**
+- **Vite**
+- **Tailwind CSS v4**
+- **Lucide Icons**
+- **Motion (Framer Motion)**
+- **Leaflet Map** (แผนที่โรงพยาบาลและระยะทาง)
+- **@google/genai** (AI Gemini API)
