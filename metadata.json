@@ -1,7 +1,9 @@
 {
   "name": "Remix InnoTector Care",
   "description": "AI Smart Triage \u0026 Real-time Hospital Queue Management System with Personal Health Dashboard",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "geolocation"
+  ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

@@ -118,7 +118,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ user, initialSummary, onClos
   // Load facility messages when active facility changes
   useEffect(() => {
     if (activeFacility) {
-      const list = getFacilityChatMessages(activeFacility.id);
+      const list = getFacilityChatMessages(activeFacility.id, user.id);
       setMessages(list);
 
       // Listen for updates
@@ -132,33 +132,41 @@ export const ChatView: React.FC<ChatViewProps> = ({ user, initialSummary, onClos
         window.removeEventListener(`innotector_chat_updated_${activeFacility.id}`, onChatUpdate);
       };
     }
-  }, [activeFacility]);
+  }, [activeFacility, user.id]);
 
   // Forward initial summary into the active chat if present
   useEffect(() => {
     if (initialSummary && activeFacility) {
       const alreadySent = messages.some((m) => m.text.includes(initialSummary.slice(0, 30)));
       if (!alreadySent) {
-        saveFacilityChatMessage(activeFacility.id, {
-          sender: 'user',
-          text: `[ส่งสรุปผลการประเมินอาการ AI Triage ให้แพทย์ตรวจ]\n${initialSummary}`,
-          isSummary: true,
-        });
+        saveFacilityChatMessage(
+          activeFacility.id,
+          {
+            sender: 'user',
+            text: `[ส่งสรุปผลการประเมินอาการ AI Triage ให้แพทย์ตรวจ]\n${initialSummary}`,
+            isSummary: true,
+          },
+          user.id
+        );
 
         setIsTyping(true);
         setTimeout(() => {
           setIsTyping(false);
-          saveFacilityChatMessage(activeFacility.id, {
-            sender: 'doctor',
-            doctorName: activeFacility.name,
-            doctorSpecialty: activeFacility.role,
-            text: `สวัสดีค่ะคุณ${user.name} แพทย์ได้รับผลสรุป AI Triage เรียบร้อยแล้วค่ะ แนะนำให้พักผ่อนมากๆ ดื่มน้ำอุ่น และสามารถเดินทางมารับการตรวจตามคิวที่จองไว้ได้เลยนะคะ`,
-          });
+          saveFacilityChatMessage(
+            activeFacility.id,
+            {
+              sender: 'doctor',
+              doctorName: activeFacility.name,
+              doctorSpecialty: activeFacility.role,
+              text: `สวัสดีค่ะคุณ${user.name} แพทย์ได้รับผลสรุป AI Triage เรียบร้อยแล้วค่ะ แนะนำให้พักผ่อนมากๆ ดื่มน้ำอุ่น และสามารถเดินทางมารับการตรวจตามคิวที่จองไว้ได้เลยนะคะ`,
+            },
+            user.id
+          );
           playChime('success');
         }, 1000);
       }
     }
-  }, [initialSummary, activeFacility, user.name, messages]);
+  }, [initialSummary, activeFacility, user.name, user.id, messages]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -173,10 +181,14 @@ export const ChatView: React.FC<ChatViewProps> = ({ user, initialSummary, onClos
     const text = (textToSend || inputText).trim();
     if (!text) return;
 
-    saveFacilityChatMessage(activeFacility.id, {
-      sender: 'user',
-      text,
-    });
+    saveFacilityChatMessage(
+      activeFacility.id,
+      {
+        sender: 'user',
+        text,
+      },
+      user.id
+    );
     setInputText('');
 
     // Trigger realistic facility auto-response
@@ -185,20 +197,36 @@ export const ChatView: React.FC<ChatViewProps> = ({ user, initialSummary, onClos
       setIsTyping(false);
       const replyText = generateFacilityReply(text, activeFacility, user);
 
-      saveFacilityChatMessage(activeFacility.id, {
-        sender: 'doctor',
-        doctorName: activeFacility.name,
-        doctorSpecialty: activeFacility.role,
-        text: replyText,
-      });
+      saveFacilityChatMessage(
+        activeFacility.id,
+        {
+          sender: 'doctor',
+          doctorName: activeFacility.name,
+          doctorSpecialty: activeFacility.role,
+          text: replyText,
+        },
+        user.id
+      );
       playChime('success');
     }, 900);
   };
 
   const handleSendGps = () => {
-    if (!activeFacility) return;
-    const text = `📍 [ส่งตำแหน่งพิกัด GPS สดของฉัน]\nพิกัด: 13.7224, 100.3802\nสถานที่: เขตบางแค กรุงเทพมหานคร\nความแม่นยำ: ~15 เมตร`;
-    handleSend(text);
+    if (!activeFacility || !('geolocation' in navigator)) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude.toFixed(4);
+        const lng = pos.coords.longitude.toFixed(4);
+        const acc = Math.round(pos.coords.accuracy || 0);
+        const text = `📍 [ส่งตำแหน่งพิกัด GPS สดของฉัน]\nพิกัด: ${lat}, ${lng}\nความแม่นยำ: ~${acc} เมตร`;
+        handleSend(text);
+      },
+      () => {
+        const text = '📍 ไม่สามารถดึงพิกัด GPS จากอุปกรณ์ได้ในขณะนี้ กรุณาตรวจสอบสิทธิ์การเข้าถึงตำแหน่ง';
+        handleSend(text);
+      },
+      { enableHighAccuracy: true, timeout: 7000 }
+    );
   };
 
   const filteredFacilities = FACILITY_CHATS.filter((f) => {

@@ -3,8 +3,6 @@ import {
   User,
   HeartPulse,
   AlertCircle,
-  Phone,
-  LogOut,
   Save,
   Activity,
   Building,
@@ -13,12 +11,10 @@ import {
   Check,
   ChevronRight,
   Bell,
-  Lock,
   HelpCircle,
   X,
   Sparkles,
   Camera,
-  CheckCircle2,
   ArrowLeft,
   FileDown,
   Trash2,
@@ -29,12 +25,12 @@ import {
   RotateCcw,
 } from 'lucide-react';
 import { UserProfile, WeightLogEntry } from '../types';
-import { saveUser, playChime } from '../services/storage';
+import { playChime } from '../services/storage';
 import { CARTOON_AVATARS } from '../data/mockData';
 
 interface ProfileViewProps {
   user: UserProfile;
-  onUpdateUser: (updated: UserProfile) => void;
+  onUpdateUser: (updated: UserProfile) => Promise<void> | void;
   onLogout: () => void;
   onOpenQrModal: () => void;
   onOpenDoctorSummary: () => void;
@@ -44,27 +40,58 @@ interface ProfileViewProps {
   unreadNotificationsCount?: number;
 }
 
+function resizeImageToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('ไม่สามารถอ่านไฟล์รูปภาพได้'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('รูปแบบรูปภาพไม่ถูกต้อง'));
+      img.onload = () => {
+        const size = 128;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('ไม่สามารถประมวลผลรูปภาพได้'));
+          return;
+        }
+        const minDim = Math.min(img.width, img.height);
+        const sx = (img.width - minDim) / 2;
+        const sy = (img.height - minDim) / 2;
+        ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, size, size);
+
+        let dataUrl = canvas.toDataURL('image/jpeg', 0.72);
+        if (dataUrl.length > 45000) {
+          dataUrl = canvas.toDataURL('image/jpeg', 0.45);
+        }
+        resolve(dataUrl);
+      };
+      img.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export const ProfileView: React.FC<ProfileViewProps> = ({
   user,
   onUpdateUser,
   onLogout,
-  onOpenQrModal,
   onOpenDoctorSummary,
   onOpenHealthcareRights,
   onOpenInsurancePartners,
   onOpenNotifications,
-  unreadNotificationsCount = 2,
+  unreadNotificationsCount = 0,
 }) => {
-  // Modal states
   const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
   const [isHealthInfoOpen, setIsHealthInfoOpen] = useState(false);
   const [isPrivacyOpen, setIsPrivacyOpen] = useState(false);
   const [isHelpOpen, setIsHelpOpen] = useState(false);
+  const [confirmPdpaDelete, setConfirmPdpaDelete] = useState(false);
 
-  // Policy view submodal
   const [policySubView, setPolicySubView] = useState<'privacy' | 'terms' | 'cookie' | null>(null);
 
-  // Privacy toggles matching Screenshot 154214
   const [privacyToggles, setPrivacyToggles] = useState({
     shareWithDoctor: true,
     locationGps: true,
@@ -72,12 +99,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     marketingNotifications: false,
   });
 
-  // Form data for editing
   const [formData, setFormData] = useState<UserProfile>(user);
   const [savedToast, setSavedToast] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Health info weights & inputs
   const [newWeight, setNewWeight] = useState('');
   const [newAllergy, setNewAllergy] = useState('');
   const [newChronic, setNewChronic] = useState('');
@@ -86,16 +112,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     setFormData(user);
   }, [user]);
 
-  const weightLogs: WeightLogEntry[] = formData.weightLog || [
-    { day: '15', mon: 'ส.ค.', weight: 68 },
-    { day: '01', mon: 'ก.ค.', weight: 68.5 },
-    { day: '10', mon: 'มิ.ย.', weight: 67 },
-  ];
+  const weightLogs: WeightLogEntry[] = formData.weightLog || [];
 
   const hMeter = (formData.heightCm || 170) / 100;
   const minIdealWeight = Math.round(18.5 * hMeter * hMeter);
   const maxIdealWeight = Math.round(22.9 * hMeter * hMeter);
-  const bmiVal = formData.bmi || Number((formData.weightKg / (hMeter * hMeter)).toFixed(1));
+  const bmiVal = formData.bmi || Number(((formData.weightKg || 65) / (hMeter * hMeter)).toFixed(1));
 
   let bmiCategory = 'ปกติ';
   let bmiBadgeBg = 'bg-emerald-100 text-emerald-800';
@@ -119,44 +141,55 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     markerPercent = Math.min(95, 75 + ((bmiVal - 25) / 10) * 25);
   }
 
-  const handleSaveProfile = () => {
-    const updatedBmi = Number((formData.weightKg / (hMeter * hMeter)).toFixed(1));
-    const updated: UserProfile = {
-      ...formData,
-      bmi: updatedBmi,
-      weightLog: weightLogs,
-    };
-    saveUser(updated);
-    onUpdateUser(updated);
-    setIsEditProfileOpen(false);
-    setSavedToast('บันทึกข้อมูลโปรไฟล์และรูปภาพเรียบร้อยแล้ว');
-    playChime('success');
+  const showToast = (msg: string) => {
+    setSavedToast(msg);
     setTimeout(() => setSavedToast(null), 3000);
+  };
+
+  const handleSaveProfile = async () => {
+    setIsSaving(true);
+    try {
+      const updatedBmi = Number(((formData.weightKg || 65) / (hMeter * hMeter)).toFixed(1));
+      const updated: UserProfile = {
+        ...formData,
+        bmi: updatedBmi,
+        weightLog: weightLogs,
+      };
+      await onUpdateUser(updated);
+      setIsEditProfileOpen(false);
+      showToast('บันทึกข้อมูลโปรไฟล์และสิทธิรักษาลงฐานข้อมูลเรียบร้อยแล้ว');
+      playChime('success');
+    } catch {
+      showToast('เกิดข้อผิดพลาดในการบันทึกข้อมูล กรุณาลองใหม่อีกครั้ง');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleSelectAvatar = (url: string) => {
     setFormData((prev) => ({ ...prev, avatarUrl: url }));
   };
 
-  const handleGalleryUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleGalleryUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          handleSelectAvatar(reader.result);
-          setSavedToast('อัปโหลดรูปภาพจากแกลเลอรีสำเร็จ');
-          playChime('success');
-          setTimeout(() => setSavedToast(null), 2500);
-        }
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+    try {
+      const resized = await resizeImageToDataUrl(file);
+      if (resized.length > 48000) {
+        showToast('ขนาดไฟล์รูปภาพใหญ่เกินไป กรุณาเลือกรูปอื่น');
+        return;
+      }
+      handleSelectAvatar(resized);
+      showToast('ย่อขนาดและเตรียมอัปโหลดรูปภาพเรียบร้อยแล้ว กด "บันทึกการแก้ไข" เพื่อยืนยัน');
+      playChime('success');
+    } catch {
+      showToast('ไม่สามารถอัปโหลดรูปภาพได้');
     }
   };
 
-  const handleAddWeight = () => {
+  const handleAddWeight = async () => {
     const w = parseFloat(newWeight);
-    if (isNaN(w) || w <= 0) return;
+    if (isNaN(w) || w <= 0 || w > 500) return;
 
     const today = new Date();
     const thaiMonths = ['ม.ค.','ก.พ.','มี.ค.','เม.ย.','พ.ค.','มิ.ย.','ก.ค.','ส.ค.','ก.ย.','ต.ค.','พ.ย.','ธ.ค.'];
@@ -169,7 +202,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
     const newLogs = [newEntry, ...weightLogs];
     const updatedBmi = Number((w / (hMeter * hMeter)).toFixed(1));
-    const updated = {
+    const updated: UserProfile = {
       ...formData,
       weightKg: w,
       bmi: updatedBmi,
@@ -177,58 +210,53 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     };
 
     setFormData(updated);
-    saveUser(updated);
-    onUpdateUser(updated);
     setNewWeight('');
+    await onUpdateUser(updated);
     playChime('success');
   };
 
-  const handleAddAllergy = () => {
+  const handleAddAllergy = async () => {
     if (!newAllergy.trim()) return;
     const current = formData.drugAllergies.filter((a) => a !== 'ไม่มีประวัติแพ้ยา');
-    const updated = {
+    const updated: UserProfile = {
       ...formData,
       drugAllergies: [...current, newAllergy.trim()],
     };
     setFormData(updated);
-    saveUser(updated);
-    onUpdateUser(updated);
     setNewAllergy('');
+    await onUpdateUser(updated);
   };
 
-  const handleRemoveAllergy = (idx: number) => {
+  const handleRemoveAllergy = async (idx: number) => {
     const next = formData.drugAllergies.filter((_, i) => i !== idx);
-    const updated = {
+    const updated: UserProfile = {
       ...formData,
       drugAllergies: next.length ? next : ['ไม่มีประวัติแพ้ยา'],
     };
     setFormData(updated);
-    saveUser(updated);
-    onUpdateUser(updated);
+    await onUpdateUser(updated);
   };
 
-  const handleAddChronic = () => {
+  const handleAddChronic = async () => {
     if (!newChronic.trim()) return;
     const current = formData.chronicDiseases.filter((c) => c !== 'ไม่มี');
-    const updated = {
+    const updated: UserProfile = {
       ...formData,
       chronicDiseases: [...current, newChronic.trim()],
     };
     setFormData(updated);
-    saveUser(updated);
-    onUpdateUser(updated);
     setNewChronic('');
+    await onUpdateUser(updated);
   };
 
-  const handleRemoveChronic = (idx: number) => {
+  const handleRemoveChronic = async (idx: number) => {
     const next = formData.chronicDiseases.filter((_, i) => i !== idx);
-    const updated = {
+    const updated: UserProfile = {
       ...formData,
       chronicDiseases: next.length ? next : ['ไม่มี'],
     };
     setFormData(updated);
-    saveUser(updated);
-    onUpdateUser(updated);
+    await onUpdateUser(updated);
   };
 
   const exportHealthSummary = () => {
@@ -243,15 +271,14 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
   return (
     <div className="select-none min-h-full pb-36 bg-[#f8fafc]">
-      {/* Toast Notification */}
       {savedToast && (
-        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 p-3 bg-emerald-700 text-white rounded-2xl text-xs font-heading font-bold flex items-center gap-2 shadow-xl animate-in slide-in-from-top duration-200">
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 p-3 bg-emerald-700 text-white rounded-2xl text-xs font-heading font-bold flex items-center gap-2 shadow-xl animate-in slide-in-from-top duration-200 max-w-[90vw]">
           <Check className="w-4 h-4 text-emerald-200 shrink-0 stroke-[3]" />
           <span>{savedToast}</span>
         </div>
       )}
 
-      {/* Top Header Bar matching AISelect_20261101_150556_Chrome_a4410680.jpg */}
+      {/* Top Header Bar */}
       <div className="bg-[#163d2d] text-white pt-4 pb-4 px-4 shadow-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -277,10 +304,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
       </div>
 
       <div className="p-4 space-y-3.5">
-        {/* Dark Green User Info Card matching AISelect_20261101_150556_Chrome_a4410680.jpg & AISelect_20261101_154449 */}
+        {/* Dark Green User Info Card */}
         <div className="bg-[#163d2d] text-white p-4.5 rounded-[26px] shadow-md flex items-center gap-4 relative overflow-hidden border border-emerald-900/40">
           <div className="relative">
-            {/* User profile icon: authentic default silhouette or custom photo */}
             <div className="w-16 h-16 rounded-full border border-white/20 bg-white/10 flex items-center justify-center overflow-hidden shadow-inner shrink-0">
               {user.avatarUrl ? (
                 <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
@@ -290,11 +316,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 </div>
               )}
             </div>
-            {/* Quick avatar change trigger */}
             <button
               onClick={() => setIsEditProfileOpen(true)}
               className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full bg-[#f7b73d] text-slate-900 flex items-center justify-center shadow-xs cursor-pointer hover:scale-110 transition"
-              title="แก้ไขรูปภาพหรือเลือกรูปจากเครื่อง"
+              title="แก้ไขรูปภาพหรือข้อมูลส่วนตัว"
             >
               <Camera className="w-3 h-3 text-slate-900" />
             </button>
@@ -305,38 +330,32 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               {user.name}
             </h3>
             <p className="text-xs text-[#a3cbb5] font-light truncate mt-0.5">
-              {user.email || 'user@email.com'}
+              {user.email || '-'}
             </p>
-            <p className="text-xs text-[#a3cbb5] font-mono font-light mt-0.5">
-              {user.emergencyContact?.phone || '08X-XXX-XXXX'}
+            <p className="text-xs text-[#a3cbb5] font-mono font-light mt-0.5 truncate">
+              {user.emergencyContact?.phone || 'ยังไม่ได้ระบุเบอร์โทร'}
             </p>
           </div>
         </div>
 
-        {/* 
-          White Menu Card matching AISelect_20261101_150556_Chrome_a4410680.jpg
-          1. แก้ไขโปรไฟล์
-          2. ข้อมูลสุขภาพส่วนตัว
-          3. การแจ้งเตือน
-          4. ความเป็นส่วนตัว
-          5. ช่วยเหลือ
-        */}
+        {/* Menu Card */}
         <div className="bg-white rounded-[26px] border border-slate-100 card-shadow overflow-hidden divide-y divide-slate-100 text-xs">
-          {/* 1. แก้ไขโปรไฟล์ */}
           <div
             onClick={() => setIsEditProfileOpen(true)}
             className="p-4 flex items-center justify-between hover:bg-slate-50 transition cursor-pointer group"
           >
             <div className="flex items-center gap-3">
               <span className="text-lg">✏️</span>
-              <span className="font-heading font-bold text-slate-800 text-sm group-hover:text-emerald-700 transition">
-                แก้ไขโปรไฟล์
-              </span>
+              <div>
+                <span className="font-heading font-bold text-slate-800 text-sm group-hover:text-emerald-700 transition block">
+                  แก้ไขโปรไฟล์ &amp; สิทธิการรักษา
+                </span>
+                <span className="text-[10px] text-slate-400">ชื่อ, รูปภาพ, สิทธิบัตรทอง/ประกันสังคม, ประกันสุขภาพ</span>
+              </div>
             </div>
             <ChevronRight className="w-4 h-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
           </div>
 
-          {/* 2. ข้อมูลสุขภาพส่วนตัว */}
           <div
             onClick={() => setIsHealthInfoOpen(true)}
             className="p-4 flex items-center justify-between hover:bg-slate-50 transition cursor-pointer group"
@@ -353,7 +372,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <ChevronRight className="w-4 h-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
           </div>
 
-          {/* 3. การแจ้งเตือน */}
           <div
             onClick={onOpenNotifications}
             className="p-4 flex items-center justify-between hover:bg-slate-50 transition cursor-pointer group"
@@ -374,7 +392,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <ChevronRight className="w-4 h-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
           </div>
 
-          {/* 4. ความเป็นส่วนตัว matching Screenshot 154214 */}
           <div
             onClick={() => setIsPrivacyOpen(true)}
             className="p-4 flex items-center justify-between hover:bg-slate-50 transition cursor-pointer group"
@@ -388,7 +405,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <ChevronRight className="w-4 h-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
           </div>
 
-          {/* 5. ช่วยเหลือ */}
           <div
             onClick={() => setIsHelpOpen(true)}
             className="p-4 flex items-center justify-between hover:bg-slate-50 transition cursor-pointer group"
@@ -403,7 +419,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
         </div>
 
-        {/* Separate Logout Card matching AISelect_20261101_150556_Chrome_a4410680.jpg */}
+        {/* Logout Card */}
         <div
           onClick={onLogout}
           className="bg-white rounded-[26px] border border-slate-100 card-shadow p-4 flex items-center gap-3 hover:bg-rose-50/50 transition cursor-pointer group"
@@ -424,7 +440,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <span className="font-heading font-bold text-slate-800 text-[11px] block">
               สิทธิบัตรทอง / ประกันสังคม
             </span>
-            <span className="text-[10px] text-slate-400">ตรวจสอบหน่วยบริการประจำ</span>
+            <span className="text-[10px] text-slate-400 truncate block">
+              {user.assignedHospital || 'ตรวจสอบหน่วยบริการประจำ'}
+            </span>
           </button>
 
           <button
@@ -438,79 +456,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <span className="text-[10px] text-slate-400">เช็กสิทธิ Fax Claim</span>
           </button>
         </div>
-
-        {/* Project Source Code Download Box */}
-        <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-2xl p-4 border border-slate-700/80 card-shadow space-y-3">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-base">💻</span>
-                <h4 className="font-heading font-bold text-xs text-white">
-                  ไฟล์โค้ดสำหรับนำไปทำต่อใน VS Code (HTML / Code)
-                </h4>
-              </div>
-              <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
-                ส่งออกเป็นไฟล์ <span className="text-emerald-400 font-semibold">index.html</span> หรือแพ็กเกจ ZIP สามารถเปิดเขียนโค้ดต่อใน VS Code ได้ทันที
-              </p>
-            </div>
-            <span className="text-[10px] bg-emerald-950/80 text-emerald-400 border border-emerald-800/80 px-2 py-0.5 rounded-full shrink-0 font-mono">
-              Ready
-            </span>
-          </div>
-
-          {/* Option 1: Standalone HTML for VS Code */}
-          <div className="bg-slate-800/70 rounded-xl p-3 border border-slate-700 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold text-emerald-300 flex items-center gap-1">
-                <span>📄</span> โค้ด HTML เดี่ยว (สำหรับโค้ช / Live Server)
-              </span>
-              <span className="text-[9px] text-slate-400 font-mono">index.html (~216 KB)</span>
-            </div>
-            <p className="text-[10px] text-slate-300 leading-snug">
-              เปิดใน VS Code ดับเบิลคลิกเปิดผ่านเว็บ หรือคลิกขวาเลือก "Open with Live Server" ได้ทันที ไม่ต้องติดตั้งโปรแกรมเสริม
-            </p>
-            <div className="flex gap-2 pt-0.5">
-              <a
-                href="/innotector-care.html"
-                download="index.html"
-                className="flex-1 py-1.5 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs text-center"
-              >
-                <FileDown className="w-3.5 h-3.5" />
-                <span>โหลด index.html</span>
-              </a>
-              <a
-                href="/innotector-care-vscode-html.zip"
-                download="innotector-care-vscode-html.zip"
-                className="flex-1 py-1.5 px-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 active:scale-95 text-slate-100 font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer border border-slate-600 text-center"
-              >
-                <FileDown className="w-3.5 h-3.5 text-emerald-400" />
-                <span>โหลด ZIP (HTML)</span>
-              </a>
-            </div>
-          </div>
-
-          {/* Option 2: Full React Source */}
-          <div className="pt-1 flex items-center justify-between text-[11px]">
-            <span className="text-slate-400 text-[10px]">ต้องการตัวเต็ม React+TS:</span>
-            <a
-              href="/innotector-care-source.zip"
-              download="innotector-care-source.zip"
-              className="text-emerald-400 hover:text-emerald-300 underline font-medium text-[11px] flex items-center gap-1"
-            >
-              <FileDown className="w-3 h-3" /> ดาวน์โหลด React ZIP (~2.6 MB)
-            </a>
-          </div>
-
-          <div className="bg-slate-950/60 rounded-xl p-2.5 border border-slate-800 text-[10px] font-mono text-slate-400 space-y-1">
-            <p className="text-emerald-400 font-sans font-medium text-[10px]">วิธีเปิดทำต่อใน VS Code:</p>
-            <p>1. ดาวน์โหลดไฟล์ <code className="text-amber-300">index.html</code> หรือแตกไฟล์ ZIP</p>
-            <p>2. เปิด VS Code &gt; ลากไฟล์ <code className="text-amber-300">index.html</code> เข้ามา</p>
-            <p>3. คลิกขวาเลือก <code className="text-amber-300">Open with Live Server</code> หรือดับเบิลคลิกเปิดดูใน Chrome</p>
-          </div>
-        </div>
       </div>
 
-      {/* ================= MODAL 1: แก้ไขโปรไฟล์ & อัปโหลดรูปจากเครื่อง / ตัวการ์ตูน ================= */}
+      {/* ================= MODAL 1: แก้ไขโปรไฟล์ & สิทธิรักษา ================= */}
       {isEditProfileOpen && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-[32px] p-5 max-w-md w-full shadow-2xl relative border border-slate-100 max-h-[92vh] overflow-y-auto no-scrollbar">
@@ -523,10 +471,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
             <div className="mb-4">
               <h3 className="font-heading font-extrabold text-base sm:text-lg text-slate-900">
-                แก้ไขข้อมูลโปรไฟล์
+                แก้ไขข้อมูลโปรไฟล์ &amp; สิทธิรักษา
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                เลือกรูปภาพจากเครื่องโทรศัพท์ หรือตัวการ์ตูนประจำตัว
+                ข้อมูลสิทธิรักษาและ รพ.ประจำสิทธิ ใช้ในการคัดกรองสถานพยาบาลจริงในหน้าประเมินอาการและแผนที่
               </p>
             </div>
 
@@ -537,7 +485,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 <span>รูปภาพโปรไฟล์ผู้ใช้งาน</span>
               </span>
 
-              {/* Current Preview */}
               <div className="flex items-center gap-3">
                 <div className="w-14 h-14 rounded-full border-2 border-emerald-500 overflow-hidden bg-slate-100 flex items-center justify-center shrink-0 shadow-xs">
                   {formData.avatarUrl ? (
@@ -548,7 +495,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 </div>
 
                 <div className="flex-1 space-y-1.5">
-                  {/* Native File Upload Input */}
                   <label className="flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl text-[11px] font-bold font-heading cursor-pointer shadow-xs transition">
                     <ImageIcon className="w-3.5 h-3.5" />
                     <span>เลือกรูปจากแกลเลอรีในเครื่อง</span>
@@ -568,7 +514,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                       className="w-full text-[10px] text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1 py-1 font-medium transition cursor-pointer"
                     >
                       <RotateCcw className="w-3 h-3 text-slate-400" />
-                      <span>รีเซ็ตเป็นไอคอนค่าเริ่มต้น (เงาสีขาว)</span>
+                      <span>รีเซ็ตเป็นไอคอนค่าเริ่มต้น</span>
                     </button>
                   )}
                 </div>
@@ -579,7 +525,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <div className="mb-5 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
               <span className="font-heading font-bold text-xs text-slate-800 block mb-2 flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                <span>หรือเลือกตัวการ์ตูนน่ารัก (Cartoon Avatars)</span>
+                <span>หรือเลือกอวตารแนะนำ</span>
               </span>
 
               <div className="grid grid-cols-4 gap-2">
@@ -615,13 +561,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <div className="space-y-3 text-xs mb-5">
               <div>
                 <label className="font-bold text-slate-700 block mb-1">
-                  ชื่อ - นามสกุล (จะแสดงในหน้าหลักและระบบทั้งหมด)
+                  ชื่อ - นามสกุล
                 </label>
                 <input
                   type="text"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="เช่น ผู้ใช้งาน หรือชื่อของคุณ"
+                  placeholder="ชื่อ-นามสกุลของคุณ"
                   className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-bold text-slate-900 focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
@@ -632,7 +578,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                   type="email"
                   value={formData.email}
                   onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  placeholder="user@email.com"
+                  placeholder="example@email.com"
                   className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-bold text-slate-900"
                 />
               </div>
@@ -669,13 +615,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="font-bold text-slate-700 block mb-1">เพศ</label>
                   <select
                     value={formData.gender}
                     onChange={(e) => setFormData({ ...formData, gender: e.target.value as UserProfile['gender'] })}
-                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white"
+                    className="w-full px-2.5 py-2 text-xs rounded-xl border border-slate-300 bg-white"
                   >
                     <option value="ชาย">ชาย</option>
                     <option value="หญิง">หญิง</option>
@@ -689,13 +635,102 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     type="number"
                     value={formData.age}
                     onChange={(e) => setFormData({ ...formData, age: Number(e.target.value) })}
+                    className="w-full px-2.5 py-2 text-xs rounded-xl border border-slate-300 bg-white"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">ส่วนสูง (ซม.)</label>
+                  <input
+                    type="number"
+                    value={formData.heightCm}
+                    onChange={(e) => setFormData({ ...formData, heightCm: Number(e.target.value) })}
+                    className="w-full px-2.5 py-2 text-xs rounded-xl border border-slate-300 bg-white"
+                  />
+                </div>
+              </div>
+
+              {/* Healthcare Rights Configuration */}
+              <div className="pt-2 border-t border-slate-200 space-y-2.5">
+                <span className="font-heading font-bold text-emerald-900 block">
+                  ข้อมูลสิทธิรักษาพยาบาลและประกันสุขภาพ
+                </span>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">สิทธิการรักษาหลัก</label>
+                  <select
+                    value={formData.medicalRight || 'สิทธิหลักประกันสุขภาพถ้วนหน้า (บัตรทอง)'}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        medicalRight: e.target.value as UserProfile['medicalRight'],
+                      })
+                    }
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-semibold"
+                  >
+                    <option value="สิทธิหลักประกันสุขภาพถ้วนหน้า (บัตรทอง)">
+                      สิทธิหลักประกันสุขภาพถ้วนหน้า (บัตรทอง 30 บาท)
+                    </option>
+                    <option value="ประกันสังคม">สิทธิประกันสังคม</option>
+                    <option value="สวัสดิการข้าราชการ/รัฐวิสาหกิจ">
+                      สิทธิสวัสดิการข้าราชการ/รัฐวิสาหกิจ
+                    </option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    โรงพยาบาลประจำสิทธิหลัก
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.assignedHospital || ''}
+                    onChange={(e) => setFormData({ ...formData, assignedHospital: e.target.value })}
+                    placeholder="เช่น โรงพยาบาลราชพิพัฒน์, โรงพยาบาลศิริราช"
                     className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white"
                   />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1">
+                    โรงพยาบาลรับส่งต่อ (ถ้ามี)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.secondaryHospital || ''}
+                    onChange={(e) => setFormData({ ...formData, secondaryHospital: e.target.value })}
+                    placeholder="เช่น โรงพยาบาลรามาธิบดี"
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">ประกันสุขภาพส่วนตัว</label>
+                    <input
+                      type="text"
+                      value={formData.insuranceCompany || ''}
+                      onChange={(e) => setFormData({ ...formData, insuranceCompany: e.target.value })}
+                      placeholder="ไม่มี หรือ AIA / FWD"
+                      className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1">เลขที่กรมธรรม์</label>
+                    <input
+                      type="text"
+                      value={formData.insurancePolicyNumber || ''}
+                      onChange={(e) =>
+                        setFormData({ ...formData, insurancePolicyNumber: e.target.value })
+                      }
+                      placeholder="เลขกรมธรรม์ (ถ้ามี)"
+                      className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-mono"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
 
-            {/* Save Buttons */}
             <div className="flex gap-2">
               <button
                 onClick={() => setIsEditProfileOpen(false)}
@@ -704,11 +739,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 ยกเลิก
               </button>
               <button
-                onClick={handleSaveProfile}
-                className="flex-1 bg-emerald-700 hover:bg-emerald-800 text-white font-bold py-3 px-4 rounded-2xl text-xs font-heading transition cursor-pointer shadow-md flex items-center justify-center gap-1.5"
+                onClick={() => void handleSaveProfile()}
+                disabled={isSaving}
+                className="flex-1 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white font-bold py-3 px-4 rounded-2xl text-xs font-heading transition cursor-pointer shadow-md flex items-center justify-center gap-1.5"
               >
                 <Save className="w-4 h-4" />
-                <span>บันทึกการแก้ไข</span>
+                <span>{isSaving ? 'กำลังบันทึก...' : 'บันทึกการแก้ไข'}</span>
               </button>
             </div>
           </div>
@@ -729,7 +765,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             <div>
               <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-bold font-heading mb-1.5">
                 <HeartPulse className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Health Metrics & Records</span>
+                <span>Health Metrics &amp; Records</span>
               </div>
               <h3 className="font-heading font-extrabold text-slate-900 text-base sm:text-lg">
                 ข้อมูลสุขภาพส่วนตัว
@@ -778,7 +814,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               </p>
             </div>
 
-            {/* Health Metrics Grid */}
+            {/* Health Metrics Grid + Quick Weight Log */}
             <div className="grid grid-cols-3 gap-2 text-center text-xs">
               <div className="bg-emerald-50/70 p-3 rounded-2xl border border-emerald-200">
                 <span className="text-slate-500 text-[10px] block">ส่วนสูง</span>
@@ -792,6 +828,22 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 <span className="text-slate-500 text-[10px] block">หมู่เลือด</span>
                 <p className="font-bold text-emerald-800 font-heading text-sm mt-0.5">{user.bloodType}</p>
               </div>
+            </div>
+
+            <div className="flex gap-1.5 text-xs">
+              <input
+                type="number"
+                placeholder="อัปเดตน้ำหนักล่าสุด (กก.)..."
+                value={newWeight}
+                onChange={(e) => setNewWeight(e.target.value)}
+                className="flex-1 px-3 py-2 text-xs rounded-xl border border-slate-200 bg-slate-50"
+              />
+              <button
+                onClick={() => void handleAddWeight()}
+                className="bg-emerald-700 hover:bg-emerald-800 text-white px-3.5 py-2 rounded-xl text-xs font-bold cursor-pointer"
+              >
+                บันทึกน้ำหนัก
+              </button>
             </div>
 
             {/* Allergies & Chronic Diseases */}
@@ -808,7 +860,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     >
                       <span>{allergy}</span>
                       {allergy !== 'ไม่มีประวัติแพ้ยา' && (
-                        <button onClick={() => handleRemoveAllergy(i)} className="hover:text-rose-950 ml-0.5">×</button>
+                        <button onClick={() => void handleRemoveAllergy(i)} className="hover:text-rose-950 ml-0.5 cursor-pointer">
+                          ×
+                        </button>
                       )}
                     </span>
                   ))}
@@ -821,7 +875,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     onChange={(e) => setNewAllergy(e.target.value)}
                     className="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-slate-50"
                   />
-                  <button onClick={handleAddAllergy} className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold">+</button>
+                  <button
+                    onClick={() => void handleAddAllergy()}
+                    className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    +
+                  </button>
                 </div>
               </div>
 
@@ -837,7 +896,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     >
                       <span>{chronic}</span>
                       {chronic !== 'ไม่มี' && (
-                        <button onClick={() => handleRemoveChronic(i)} className="hover:text-emerald-950 ml-0.5">×</button>
+                        <button onClick={() => void handleRemoveChronic(i)} className="hover:text-emerald-950 ml-0.5 cursor-pointer">
+                          ×
+                        </button>
                       )}
                     </span>
                   ))}
@@ -850,12 +911,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     onChange={(e) => setNewChronic(e.target.value)}
                     className="flex-1 px-2.5 py-1.5 text-xs rounded-lg border border-slate-200 bg-slate-50"
                   />
-                  <button onClick={handleAddChronic} className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold">+</button>
+                  <button
+                    onClick={() => void handleAddChronic()}
+                    className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer"
+                  >
+                    +
+                  </button>
                 </div>
               </div>
             </div>
 
-            {/* Actions: Export / Doctor Summary */}
             <div className="grid grid-cols-2 gap-2 pt-2">
               <button
                 onClick={onOpenDoctorSummary}
@@ -874,14 +939,16 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         </div>
       )}
 
-      {/* ================= MODAL 3: ความเป็นส่วนตัว MATCHING EXACT SCREENSHOT 154214 ================= */}
+      {/* ================= MODAL 3: ความเป็นส่วนตัว ================= */}
       {isPrivacyOpen && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
           <div className="bg-white rounded-[36px] max-w-md w-full shadow-2xl relative border border-slate-100 max-h-[92vh] overflow-y-auto no-scrollbar flex flex-col">
-            {/* Top Navigation Bar: ← ความเป็นส่วนตัว matching Screenshot */}
             <div className="p-4 border-b border-slate-100 flex items-center gap-3 sticky top-0 bg-white/95 backdrop-blur-xs z-10">
               <button
-                onClick={() => setIsPrivacyOpen(false)}
+                onClick={() => {
+                  setIsPrivacyOpen(false);
+                  setConfirmPdpaDelete(false);
+                }}
                 className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center transition cursor-pointer"
               >
                 <ArrowLeft className="w-4 h-4" />
@@ -892,14 +959,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             </div>
 
             <div className="p-4 space-y-4 text-xs">
-              {/* Section 1: การแชร์ข้อมูล */}
               <div>
                 <h4 className="font-heading font-bold text-xs text-slate-800 mb-2 px-1">
                   การแชร์ข้อมูล
                 </h4>
 
                 <div className="bg-white rounded-2xl border border-slate-200 card-shadow divide-y divide-slate-100 overflow-hidden">
-                  {/* Item 1: แชร์ข้อมูลสุขภาพกับแพทย์ */}
                   <div className="p-3.5 flex items-center justify-between gap-3">
                     <div className="flex items-start gap-3">
                       <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
@@ -931,7 +996,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     </button>
                   </div>
 
-                  {/* Item 2: การเข้าถึงตำแหน่ง (GPS) */}
                   <div className="p-3.5 flex items-center justify-between gap-3">
                     <div className="flex items-start gap-3">
                       <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
@@ -963,7 +1027,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     </button>
                   </div>
 
-                  {/* Item 3: ข้อมูลเพื่อการวิจัยแบบไม่ระบุตัวตน */}
                   <div className="p-3.5 flex items-center justify-between gap-3">
                     <div className="flex items-start gap-3">
                       <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
@@ -971,10 +1034,10 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                       </div>
                       <div>
                         <h5 className="font-heading font-bold text-xs text-slate-900 leading-snug">
-                          ข้อมูลเพื่อการวิจัยแบบไม่ระบุตัวตน
+                          ข้อมูลเพื่อการพัฒนาการคัดกรอง
                         </h5>
                         <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
-                          ช่วยพัฒนาความแม่นยำของระบบประเมินอาการ AI
+                          แบบไม่ระบุตัวตนตามมาตรฐาน PDPA
                         </p>
                       </div>
                     </div>
@@ -997,45 +1060,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                       />
                     </button>
                   </div>
-
-                  {/* Item 4: การแจ้งเตือนทางการตลาด */}
-                  <div className="p-3.5 flex items-center justify-between gap-3">
-                    <div className="flex items-start gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0 mt-0.5">
-                        <Bell className="w-4.5 h-4.5 text-emerald-600" />
-                      </div>
-                      <div>
-                        <h5 className="font-heading font-bold text-xs text-slate-900 leading-snug">
-                          การแจ้งเตือนทางการตลาด
-                        </h5>
-                        <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
-                          ข่าวสาร โปรโมชั่น และเคล็ดลับสุขภาพจากทีมงาน
-                        </p>
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() =>
-                        setPrivacyToggles((prev) => ({
-                          ...prev,
-                          marketingNotifications: !prev.marketingNotifications,
-                        }))
-                      }
-                      className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
-                        privacyToggles.marketingNotifications ? 'bg-emerald-600' : 'bg-slate-300'
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-1 left-1 bg-white w-4 h-4 rounded-full transition-transform shadow-xs ${
-                          privacyToggles.marketingNotifications ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
-                  </div>
                 </div>
               </div>
 
-              {/* Section 2: เอกสารและนโยบาย matching Screenshot */}
               <div>
                 <h4 className="font-heading font-bold text-xs text-slate-800 mb-2 px-1">
                   เอกสารและนโยบาย
@@ -1067,23 +1094,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     </div>
                     <ChevronRight className="w-4 h-4 text-slate-400" />
                   </div>
-
-                  <div
-                    onClick={() => setPolicySubView('cookie')}
-                    className="p-3.5 flex items-center justify-between hover:bg-slate-50 transition cursor-pointer"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-base">🍪</span>
-                      <span className="font-heading font-bold text-xs text-slate-800">
-                        นโยบายคุกกี้
-                      </span>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-slate-400" />
-                  </div>
                 </div>
               </div>
 
-              {/* Section 3: การจัดการข้อมูลของฉัน */}
               <div>
                 <h4 className="font-heading font-bold text-xs text-slate-800 mb-2 px-1">
                   การจัดการข้อมูลของฉัน
@@ -1095,21 +1108,42 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                     className="w-full py-2.5 px-3 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer font-heading"
                   >
                     <FileDown className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>ดาวน์โหลดสำเนาข้อมูลสุขภาพ (Data Portability)</span>
+                    <span>ดาวน์โหลดสำเนาข้อมูลสุขภาพ (JSON)</span>
                   </button>
 
-                  <button
-                    onClick={() => {
-                      if (confirm('คุณต้องการขอลบประวัติการประเมินอาการและข้อมูลส่วนบุคคลตามสิทธิ PDPA หรือไม่?')) {
-                        setSavedToast('ส่งคำร้องขอลบข้อมูลตามสิทธิ PDPA เรียบร้อยแล้ว');
-                        playChime('alert');
-                      }
-                    }}
-                    className="w-full py-2.5 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer font-heading"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 text-rose-600" />
-                    <span>ขอลบประวัติและข้อมูลส่วนบุคคลตามสิทธิ PDPA</span>
-                  </button>
+                  {!confirmPdpaDelete ? (
+                    <button
+                      onClick={() => setConfirmPdpaDelete(true)}
+                      className="w-full py-2.5 px-3 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-[11px] flex items-center justify-center gap-1.5 transition cursor-pointer font-heading"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                      <span>ขอลบประวัติและข้อมูลส่วนบุคคลตามสิทธิ PDPA</span>
+                    </button>
+                  ) : (
+                    <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 space-y-2">
+                      <p className="text-[11px] text-rose-900 font-semibold">
+                        ยืนยันการส่งคำร้องขอลบข้อมูลส่วนบุคคลตามสิทธิ PDPA?
+                      </p>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setConfirmPdpaDelete(false)}
+                          className="flex-1 py-1.5 bg-white border border-slate-200 rounded-lg text-[11px] font-bold text-slate-600 cursor-pointer"
+                        >
+                          ยกเลิก
+                        </button>
+                        <button
+                          onClick={() => {
+                            setConfirmPdpaDelete(false);
+                            showToast('บันทึกคำร้องขอลบข้อมูลตามสิทธิ PDPA เรียบร้อยแล้ว');
+                            playChime('alert');
+                          }}
+                          className="flex-1 py-1.5 bg-rose-600 text-white rounded-lg text-[11px] font-bold cursor-pointer"
+                        >
+                          ยืนยันส่งคำร้อง
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1128,11 +1162,11 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
             </h4>
             <p className="text-xs text-slate-600 leading-relaxed">
               {policySubView === 'privacy' &&
-                'Inotector Care ปฏิบัติตาม พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล พ.ศ. 2562 (PDPA) อย่างเคร่งครัด ข้อมูลประวัติการรักษาทั้งหมดจะถูกจัดเก็บด้วยการเข้ารหัสความปลอดภัยระดับโรงพยาบาล'}
+                'Inotector Care ปฏิบัติตาม พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล พ.ศ. 2562 (PDPA) ข้อมูลของคุณถูกผูกกับบัญชีผู้ใช้ที่ยืนยันตัวตนแล้วเท่านั้น'}
               {policySubView === 'terms' &&
-                'การประเมินอาการเบื้องต้นโดย AI เป็นเครื่องมือช่วยคัดกรองความเร่งด่วนเบื้องต้น มิใช่การวินิจฉัยโรคขั้นสุดท้าย ในกรณีฉุกเฉินวิกฤตกรุณาโทร 1669 หรือไปห้องฉุกเฉินทันที'}
+                'การประเมินอาการเบื้องต้นเป็นเครื่องมือช่วยคัดกรองความเร่งด่วน มิใช่การวินิจฉัยโรคขั้นสุดท้าย ในกรณีฉุกเฉินวิกฤตกรุณาโทร 1669 หรือไปห้องฉุกเฉินทันที'}
               {policySubView === 'cookie' &&
-                'เราใช้คุกกี้และหน่วยความจำในอุปกรณ์เพื่อจดจำการตั้งค่า เซสชันการเข้าสู่ระบบ และการปรับแต่งสิทธิประโยชน์ของผู้ใช้งาน'}
+                'เราใช้หน่วยความจำในอุปกรณ์เพื่อจดจำการตั้งค่าเสียงและการใช้งานบนแผนที่ของคุณ'}
             </p>
             <button
               onClick={() => setPolicySubView(null)}
@@ -1160,25 +1194,15 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 <HelpCircle className="w-5 h-5" />
               </div>
               <h3 className="font-heading font-extrabold text-base text-slate-900">
-                ศูนย์ช่วยเหลือ & ติดต่อสถานพยาบาล
+                ศูนย์ช่วยเหลือ &amp; สายด่วนฉุกเฉิน
               </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                คำถามที่พบบ่อยและช่องทางติดต่อสายด่วนทางการแพทย์
-              </p>
             </div>
 
             <div className="space-y-2 text-xs">
               <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-                <h4 className="font-bold text-slate-800 font-heading">Q: จองคิวแล้วต้องไปถึงโรงพยาบาลก่อนกี่นาที?</h4>
+                <h4 className="font-bold text-slate-800 font-heading">Q: ระบบแนะนำสถานพยาบาลคัดกรองจากอะไร?</h4>
                 <p className="text-slate-500 text-[11px] mt-1">
-                  แนะนำไปถึงก่อนเวลานัด 15-20 นาที เพื่อยื่นสแกน QR Code ณ ตู้คีออสค์หรือจุดคัดกรอง
-                </p>
-              </div>
-
-              <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
-                <h4 className="font-bold text-slate-800 font-heading">Q: สิทธิบัตรทอง 30 บาท รักษาทุกที่คืออะไร?</h4>
-                <p className="text-slate-500 text-[11px] mt-1">
-                  สามารถเข้ารับการรักษาในระดับปฐมภูมิ เช่น ศบส. และคลินิกชุมชนอบอุ่น หรือร้านยาที่เข้าร่วมได้ฟรี 0 บาท
+                  คัดกรองจากระดับความรุนแรงของอาการ ตำแหน่ง GPS ปัจจุบัน เวลาเปิด-ปิดทำการจริง และสิทธิรักษาพยาบาลที่บันทึกไว้ในโปรไฟล์ของคุณ
                 </p>
               </div>
 

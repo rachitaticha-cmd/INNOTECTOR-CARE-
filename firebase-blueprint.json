@@ -1,0 +1,386 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated patient profile, health metrics, allergies, chronic conditions, and healthcare rights.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 200
+        },
+        "hn": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "nationalId": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "age": {
+          "type": "integer"
+        },
+        "gender": {
+          "type": "string",
+          "enum": ["ชาย", "หญิง", "อื่นๆ"],
+          "maxLength": 20
+        },
+        "bloodType": {
+          "type": "string",
+          "enum": ["A", "B", "AB", "O"],
+          "maxLength": 10
+        },
+        "heightCm": {
+          "type": "number"
+        },
+        "weightKg": {
+          "type": "number"
+        },
+        "bmi": {
+          "type": "number"
+        },
+        "drugAllergies": {
+          "type": "array"
+        },
+        "chronicDiseases": {
+          "type": "array"
+        },
+        "medicalRight": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "assignedHospital": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "secondaryHospital": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "insuranceCompany": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "insurancePolicyNumber": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "emergencyContact": {
+          "type": "object"
+        },
+        "avatarUrl": {
+          "type": "string",
+          "maxLength": 50000
+        },
+        "weightLog": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "email",
+        "hn",
+        "nationalId",
+        "age",
+        "gender",
+        "bloodType",
+        "heightCm",
+        "weightKg",
+        "bmi",
+        "drugAllergies",
+        "chronicDiseases",
+        "medicalRight",
+        "assignedHospital",
+        "secondaryHospital",
+        "insuranceCompany",
+        "insurancePolicyNumber",
+        "emergencyContact",
+        "avatarUrl",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "QueueTicket": {
+      "title": "QueueTicket",
+      "description": "Real-time hospital queue ticket booked by the patient after triage or facility selection.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hospitalId": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "hospitalName": {
+          "type": "string",
+          "maxLength": 250
+        },
+        "department": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "queueNum": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "triageLevel": {
+          "type": "string",
+          "enum": ["green", "yellow", "orange", "red"],
+          "maxLength": 20
+        },
+        "triageTitle": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "ahead": {
+          "type": "integer"
+        },
+        "estWait": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "status": {
+          "type": "string",
+          "enum": ["waiting", "called", "completed", "cancelled"],
+          "maxLength": 20
+        },
+        "symptomsSummary": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "qrCodeUrl": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "hospitalId",
+        "hospitalName",
+        "department",
+        "queueNum",
+        "triageLevel",
+        "triageTitle",
+        "ahead",
+        "estWait",
+        "status",
+        "symptomsSummary",
+        "qrCodeUrl",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TriageAssessment": {
+      "title": "TriageAssessment",
+      "description": "Symptom triage record including urgency tier and real-GPS facility recommendation.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "duration": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "symptoms": {
+          "type": "array"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "hasRedFlags": {
+          "type": "boolean"
+        },
+        "redFlagsList": {
+          "type": "array"
+        },
+        "level": {
+          "type": "string",
+          "enum": ["green", "yellow", "orange", "red"],
+          "maxLength": 20
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "clinicalSummary": {
+          "type": "string",
+          "maxLength": 3000
+        },
+        "recommendedHospitalId": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "recommendedHospitalName": {
+          "type": "string",
+          "maxLength": 250
+        },
+        "recommendedService": {
+          "type": "string",
+          "enum": ["ร้านยา", "คลินิก", "โรงพยาบาล", "ห้องฉุกเฉิน"],
+          "maxLength": 60
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "duration",
+        "symptoms",
+        "notes",
+        "hasRedFlags",
+        "redFlagsList",
+        "level",
+        "title",
+        "description",
+        "clinicalSummary",
+        "recommendedHospitalId",
+        "recommendedHospitalName",
+        "recommendedService",
+        "createdAt"
+      ]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "User notification record stored per patient account.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "subtitle": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "time": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "color": {
+          "type": "string",
+          "enum": ["amber", "emerald", "slate", "sky", "rose"],
+          "maxLength": 20
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "linkTab": {
+          "type": "string",
+          "enum": ["home", "history", "messages", "account"],
+          "maxLength": 20
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "title",
+        "subtitle",
+        "time",
+        "color",
+        "read",
+        "linkTab",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Owner-only patient profile document containing personal health records and healthcare rights."
+    },
+    "/users/{userId}/queues/{queueId}": {
+      "schema": {
+        "$ref": "#/entities/QueueTicket"
+      },
+      "description": "Patient's booked hospital queue tickets synced in real time."
+    },
+    "/users/{userId}/triages/{triageId}": {
+      "schema": {
+        "$ref": "#/entities/TriageAssessment"
+      },
+      "description": "Patient's symptom triage assessments and recommended open healthcare facilities."
+    },
+    "/users/{userId}/notifications/{notifId}": {
+      "schema": {
+        "$ref": "#/entities/NotificationItem"
+      },
+      "description": "Patient's real-time notifications for queue bookings, GPS checks, and reminders."
+    }
+  }
+}

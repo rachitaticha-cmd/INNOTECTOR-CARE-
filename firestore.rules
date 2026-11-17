@@ -1,0 +1,294 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Default-deny global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core hardened primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isEmailVerified() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isStringBounded(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isNonEmptyStringBounded(val, maxLen) {
+      return val is string && val.size() > 0 && val.size() <= maxLen;
+    }
+
+    function isValidStringList(arr, maxLen, itemMaxLen) {
+      return arr is list &&
+        arr.size() <= maxLen &&
+        (arr.size() == 0 || (arr[0] is string && arr[0].size() <= itemMaxLen));
+    }
+
+    function isValidEmergencyContact(ec) {
+      return ec is map &&
+        ec.keys().hasAll(['name', 'relationship', 'phone']) &&
+        ec.keys().hasOnly(['name', 'relationship', 'phone']) &&
+        isStringBounded(ec.name, 120) &&
+        isStringBounded(ec.relationship, 60) &&
+        isStringBounded(ec.phone, 40);
+    }
+
+    function isValidWeightLogList(wl) {
+      return wl is list &&
+        wl.size() <= 30 &&
+        (
+          wl.size() == 0 ||
+          (
+            wl[0] is map &&
+            wl[0].keys().hasAll(['day', 'mon', 'weight']) &&
+            wl[0].keys().hasOnly(['day', 'mon', 'weight', 'dateStr']) &&
+            isStringBounded(wl[0].day, 10) &&
+            isStringBounded(wl[0].mon, 20) &&
+            wl[0].weight is number &&
+            (!('dateStr' in wl[0]) || isStringBounded(wl[0].dateStr, 40))
+          )
+        );
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.id == userId &&
+        data.id == request.auth.uid &&
+        isNonEmptyStringBounded(data.name, 120) &&
+        isNonEmptyStringBounded(data.email, 200) &&
+        isStringBounded(data.hn, 40) &&
+        isStringBounded(data.nationalId, 30) &&
+        data.age is number && data.age >= 0 && data.age <= 150 &&
+        data.gender in ['ชาย', 'หญิง', 'อื่นๆ'] &&
+        data.bloodType in ['A', 'B', 'AB', 'O'] &&
+        data.heightCm is number && data.heightCm >= 30 && data.heightCm <= 300 &&
+        data.weightKg is number && data.weightKg >= 1 && data.weightKg <= 500 &&
+        data.bmi is number && data.bmi >= 5 && data.bmi <= 100 &&
+        isValidStringList(data.drugAllergies, 20, 120) &&
+        isValidStringList(data.chronicDiseases, 20, 120) &&
+        isStringBounded(data.medicalRight, 150) &&
+        isStringBounded(data.assignedHospital, 200) &&
+        isStringBounded(data.secondaryHospital, 200) &&
+        isStringBounded(data.insuranceCompany, 150) &&
+        isStringBounded(data.insurancePolicyNumber, 80) &&
+        isValidEmergencyContact(data.emergencyContact) &&
+        isStringBounded(data.avatarUrl, 50000) &&
+        (!('weightLog' in data) || isValidWeightLogList(data.weightLog)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidQueueTicket(data, userId, queueId) {
+      return data.id == queueId &&
+        isValidId(data.id) &&
+        data.userId == userId &&
+        data.userId == request.auth.uid &&
+        isNonEmptyStringBounded(data.hospitalId, 200) &&
+        isNonEmptyStringBounded(data.hospitalName, 250) &&
+        isNonEmptyStringBounded(data.department, 200) &&
+        isNonEmptyStringBounded(data.queueNum, 30) &&
+        data.triageLevel in ['green', 'yellow', 'orange', 'red'] &&
+        isNonEmptyStringBounded(data.triageTitle, 150) &&
+        data.ahead is number && data.ahead >= 0 && data.ahead <= 1000 &&
+        isNonEmptyStringBounded(data.estWait, 80) &&
+        data.status in ['waiting', 'called', 'completed', 'cancelled'] &&
+        isStringBounded(data.symptomsSummary, 500) &&
+        isStringBounded(data.qrCodeUrl, 500) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTriageAssessment(data, userId, triageId) {
+      return data.id == triageId &&
+        isValidId(data.id) &&
+        data.userId == userId &&
+        data.userId == request.auth.uid &&
+        isStringBounded(data.duration, 80) &&
+        isValidStringList(data.symptoms, 20, 150) &&
+        isStringBounded(data.notes, 2000) &&
+        (!('temperature' in data) || (data.temperature is number && data.temperature >= 30 && data.temperature <= 45)) &&
+        data.hasRedFlags is bool &&
+        isValidStringList(data.redFlagsList, 20, 150) &&
+        data.level in ['green', 'yellow', 'orange', 'red'] &&
+        isNonEmptyStringBounded(data.title, 200) &&
+        isNonEmptyStringBounded(data.description, 500) &&
+        isNonEmptyStringBounded(data.clinicalSummary, 3000) &&
+        isNonEmptyStringBounded(data.recommendedHospitalId, 200) &&
+        isNonEmptyStringBounded(data.recommendedHospitalName, 250) &&
+        data.recommendedService in ['ร้านยา', 'คลินิก', 'โรงพยาบาล', 'ห้องฉุกเฉิน'] &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidNotificationItem(data, userId, notifId) {
+      return data.id == notifId &&
+        isValidId(data.id) &&
+        data.userId == userId &&
+        data.userId == request.auth.uid &&
+        isNonEmptyStringBounded(data.title, 200) &&
+        isStringBounded(data.subtitle, 500) &&
+        isStringBounded(data.time, 40) &&
+        data.color in ['amber', 'emerald', 'slate', 'sky', 'rose'] &&
+        data.read is bool &&
+        data.linkTab in ['home', 'history', 'messages', 'account'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // 1. User Profile & Health Profile (strict PII isolation)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+
+      allow create: if isValidId(userId) &&
+        isOwner(userId) &&
+        incoming().keys().hasAll([
+          'id', 'name', 'email', 'hn', 'nationalId', 'age', 'gender',
+          'bloodType', 'heightCm', 'weightKg', 'bmi', 'drugAllergies',
+          'chronicDiseases', 'medicalRight', 'assignedHospital', 'secondaryHospital',
+          'insuranceCompany', 'insurancePolicyNumber', 'emergencyContact',
+          'avatarUrl', 'createdAt', 'updatedAt'
+        ]) &&
+        incoming().keys().hasOnly([
+          'id', 'name', 'email', 'hn', 'nationalId', 'age', 'gender',
+          'bloodType', 'heightCm', 'weightKg', 'bmi', 'drugAllergies',
+          'chronicDiseases', 'medicalRight', 'assignedHospital', 'secondaryHospital',
+          'insuranceCompany', 'insurancePolicyNumber', 'emergencyContact',
+          'avatarUrl', 'weightLog', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId) &&
+        isOwner(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name', 'email', 'hn', 'nationalId', 'age', 'gender',
+          'bloodType', 'heightCm', 'weightKg', 'bmi', 'drugAllergies',
+          'chronicDiseases', 'medicalRight', 'assignedHospital', 'secondaryHospital',
+          'insuranceCompany', 'insurancePolicyNumber', 'emergencyContact',
+          'avatarUrl', 'weightLog', 'updatedAt'
+        ]);
+
+      allow delete: if false;
+
+      // 2. Patient Queue Tickets
+      match /queues/{queueId} {
+        allow get: if isValidId(userId) && isValidId(queueId) && isOwner(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(queueId) &&
+          isOwner(userId) &&
+          incoming().keys().hasAll([
+            'id', 'userId', 'hospitalId', 'hospitalName', 'department', 'queueNum',
+            'triageLevel', 'triageTitle', 'ahead', 'estWait', 'status',
+            'symptomsSummary', 'qrCodeUrl', 'createdAt', 'updatedAt'
+          ]) &&
+          incoming().keys().hasOnly([
+            'id', 'userId', 'hospitalId', 'hospitalName', 'department', 'queueNum',
+            'triageLevel', 'triageTitle', 'ahead', 'estWait', 'status',
+            'symptomsSummary', 'qrCodeUrl', 'createdAt', 'updatedAt'
+          ]) &&
+          isValidQueueTicket(incoming(), userId, queueId) &&
+          incoming().status == 'waiting' &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if isValidId(userId) &&
+          isValidId(queueId) &&
+          isOwner(userId) &&
+          isValidQueueTicket(incoming(), userId, queueId) &&
+          !(existing().status in ['completed', 'cancelled']) &&
+          incoming().id == existing().id &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'ahead', 'estWait', 'updatedAt']);
+
+        allow delete: if false;
+      }
+
+      // 3. Triage Assessments
+      match /triages/{triageId} {
+        allow get: if isValidId(userId) && isValidId(triageId) && isOwner(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(triageId) &&
+          isOwner(userId) &&
+          incoming().keys().hasAll([
+            'id', 'userId', 'duration', 'symptoms', 'notes', 'hasRedFlags',
+            'redFlagsList', 'level', 'title', 'description', 'clinicalSummary',
+            'recommendedHospitalId', 'recommendedHospitalName', 'recommendedService', 'createdAt'
+          ]) &&
+          incoming().keys().hasOnly([
+            'id', 'userId', 'duration', 'symptoms', 'notes', 'temperature', 'hasRedFlags',
+            'redFlagsList', 'level', 'title', 'description', 'clinicalSummary',
+            'recommendedHospitalId', 'recommendedHospitalName', 'recommendedService', 'createdAt'
+          ]) &&
+          isValidTriageAssessment(incoming(), userId, triageId) &&
+          incoming().createdAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow update, delete: if false;
+      }
+
+      // 4. Notifications
+      match /notifications/{notifId} {
+        allow get: if isValidId(userId) && isValidId(notifId) && isOwner(userId);
+        allow list: if isOwner(userId) && existing().userId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(notifId) &&
+          isOwner(userId) &&
+          incoming().keys().hasAll([
+            'id', 'userId', 'title', 'subtitle', 'time', 'color', 'read', 'linkTab', 'createdAt', 'updatedAt'
+          ]) &&
+          incoming().keys().hasOnly([
+            'id', 'userId', 'title', 'subtitle', 'time', 'color', 'read', 'linkTab', 'createdAt', 'updatedAt'
+          ]) &&
+          isValidNotificationItem(incoming(), userId, notifId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          exists(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if isValidId(userId) &&
+          isValidId(notifId) &&
+          isOwner(userId) &&
+          isValidNotificationItem(incoming(), userId, notifId) &&
+          incoming().id == existing().id &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+
+        allow delete: if isValidId(userId) && isValidId(notifId) && isOwner(userId);
+      }
+    }
+  }
+}

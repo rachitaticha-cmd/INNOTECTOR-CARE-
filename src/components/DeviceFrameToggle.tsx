@@ -1,7 +1,8 @@
 import React from 'react';
-import { Smartphone, Monitor, Volume2, VolumeX, UserCheck, FastForward, Download } from 'lucide-react';
+import { Smartphone, Monitor, Volume2, VolumeX, UserCheck, FastForward } from 'lucide-react';
 import { DEMO_USERS } from '../data/mockData';
 import { UserProfile } from '../types';
+import { InotectorIcon } from './InotectorLogo';
 
 interface DeviceFrameToggleProps {
   isMobileFrame: boolean;
@@ -28,10 +29,8 @@ export const DeviceFrameToggle: React.FC<DeviceFrameToggleProps> = ({
     <header className="w-full bg-slate-900/95 backdrop-blur-md border-b border-slate-800 text-slate-300 py-2 px-3 sm:px-6 flex flex-wrap items-center justify-between gap-2 text-xs z-50 select-none">
       {/* App Branding & Tag */}
       <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded-lg bg-emerald-700 text-white font-bold flex items-center justify-center text-sm shadow-xs">
-          +
-        </div>
-        <div>
+        <InotectorIcon size={24} />
+        <div className="flex items-center">
           <span className="font-heading font-bold text-white text-xs sm:text-sm">Inotector Care</span>
           <span className="hidden sm:inline-block ml-2 text-[10px] text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded-full border border-emerald-800/60 font-mono">
             Smart Triage & Area Queue System
@@ -78,28 +77,6 @@ export const DeviceFrameToggle: React.FC<DeviceFrameToggleProps> = ({
         >
           {soundEnabled ? <Volume2 className="w-3.5 h-3.5 text-emerald-400" /> : <VolumeX className="w-3.5 h-3.5 text-slate-500" />}
         </button>
-
-        {/* Download HTML for VS Code */}
-        <a
-          href="/innotector-care.html"
-          download="index.html"
-          title="ดาวน์โหลดไฟล์ index.html สำหรับเปิดแก้ใน VS Code ได้ทันที"
-          className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white px-2.5 py-1 rounded-xl transition border border-emerald-500/50 text-[11px] font-medium shadow-xs"
-        >
-          <Download className="w-3.5 h-3.5 text-emerald-100" />
-          <span>โหลด HTML (VS Code)</span>
-        </a>
-
-        {/* Download Project Source ZIP */}
-        <a
-          href="/innotector-care-vscode-html.zip"
-          download="innotector-care-vscode-html.zip"
-          title="ดาวน์โหลดชุดโฟลเดอร์ HTML + README เป็น ZIP สำหรับ VS Code"
-          className="hidden sm:flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 px-2.5 py-1 rounded-xl transition border border-slate-700 text-[11px] font-medium"
-        >
-          <Download className="w-3.5 h-3.5 text-slate-400" />
-          <span>ZIP (VS Code)</span>
-        </a>
 
         {/* Frame Toggle */}
         <button

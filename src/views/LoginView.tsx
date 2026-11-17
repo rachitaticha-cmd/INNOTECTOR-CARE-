@@ -1,459 +1,546 @@
 import React, { useState } from 'react';
 import {
-  Plus,
-  ArrowRight,
-  ShieldCheck,
-  Sparkles,
-  Lock,
-  Mail,
-  User,
+  createUserWithEmailAndPassword,
+  FacebookAuthProvider,
+  OAuthProvider,
+  sendEmailVerification,
+  sendPasswordResetEmail,
+  signInWithEmailAndPassword,
+  signInWithPopup,
+  signOut,
+  updateProfile,
+  type AuthProvider,
+  type User as FirebaseUser,
+} from 'firebase/auth';
+import {
+  AlertCircle,
+  CheckCircle2,
   Eye,
   EyeOff,
-  AlertCircle,
-  X,
-  Smartphone,
+  Lock,
+  Mail,
+  RefreshCw,
+  User as UserIcon,
 } from 'lucide-react';
-import { DEMO_USERS } from '../data/mockData';
-import { UserProfile } from '../types';
+import { auth, googleProvider } from '../firebase';
+import { InotectorIcon } from '../components/InotectorLogo';
 
 interface LoginViewProps {
-  onLoginSuccess: (user: UserProfile) => void;
+  externalError?: string | null;
+  pendingVerificationUser?: FirebaseUser | null;
+  onVerificationConfirmed?: () => Promise<void> | void;
 }
 
-export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
-  // Main screen mode: 'main_form' (matches Screenshot 120040), 'google_sheet', 'line_sheet', 'apple_sheet'
-  const [activeModal, setActiveModal] = useState<'none' | 'google' | 'apple' | 'line'>('none');
-  const [isSignUp, setIsSignUp] = useState<boolean>(true);
+type AuthMode = 'login' | 'register';
+type SocialChannel = 'google' | 'line' | 'facebook' | 'apple';
 
-  // Email form state
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [fullName, setFullName] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+export const LoginView: React.FC<LoginViewProps> = ({
+  externalError,
+  pendingVerificationUser,
+  onVerificationConfirmed,
+}) => {
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
+  const [fullName, setFullName] = useState<string>('');
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [showPassword, setShowPassword] = useState<boolean>(false);
 
-  // Email continue submission
-  const handleEmailSubmit = (e: React.FormEvent) => {
+  const [errorMsg, setErrorMsg] = useState<string>('');
+  const [infoMsg, setInfoMsg] = useState<string>('');
+  const [loadingTarget, setLoadingTarget] = useState<string | null>(null);
+
+  const mapFirebaseAuthError = (err: unknown, channelLabel?: string): string => {
+    const code =
+      typeof err === 'object' && err !== null && 'code' in err
+        ? String((err as { code?: string }).code)
+        : '';
+
+    switch (code) {
+      case 'auth/popup-closed-by-user':
+      case 'auth/cancelled-popup-request':
+        return `ยกเลิกการเข้าสู่ระบบ${channelLabel ? `ด้วย ${channelLabel}` : ''} กรุณาลองใหม่อีกครั้ง`;
+      case 'auth/popup-blocked':
+        return 'เบราว์เซอร์บล็อกหน้าต่างป๊อปอัป กรุณาอนุญาตป๊อปอัปแล้วลองอีกครั้ง';
+      case 'auth/unauthorized-domain':
+        return 'โดเมนนี้ยังไม่ได้เพิ่มใน Authorized domains ของ Firebase Authentication Console';
+      case 'auth/operation-not-allowed':
+      case 'auth/configuration-not-found':
+        return `ช่องทาง ${channelLabel || 'นี้'} ยังไม่ได้เปิดใช้งานใน Firebase Authentication Console (กรุณาเปิดใช้งานในหน้า Sign-in method ก่อน)`;
+      case 'auth/account-exists-with-different-credential':
+        return 'อีเมลนี้เคยลงทะเบียนด้วยช่องทางอื่นแล้ว กรุณาเข้าสู่ระบบด้วยช่องทางเดิมที่เคยใช้';
+      case 'auth/invalid-credential':
+      case 'auth/wrong-password':
+      case 'auth/user-not-found':
+        return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบอีกครั้ง';
+      case 'auth/invalid-email':
+        return 'รูปแบบอีเมลไม่ถูกต้อง';
+      case 'auth/email-already-in-use':
+        return 'อีเมลนี้ถูกใช้งานแล้ว กรุณาสลับไปหน้า "เข้าสู่ระบบ"';
+      case 'auth/weak-password':
+        return 'รหัสผ่านต้องมีความยาวอย่างน้อย 6 ตัวอักษร';
+      case 'auth/too-many-requests':
+        return 'มีการทำรายการถี่เกินไป กรุณารอสักครู่แล้วลองใหม่อีกครั้ง';
+      default:
+        return `ไม่สามารถเข้าสู่ระบบ${channelLabel ? `ด้วย ${channelLabel}` : ''}ได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง`;
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
-    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    setInfoMsg('');
 
-    if (!email.trim()) {
-      setErrorMsg('กรุณากรอกอีเมลของคุณ');
-      return;
-    }
-    if (!emailPattern.test(email.trim())) {
-      setErrorMsg('รูปแบบอีเมลไม่ถูกต้อง (เช่น email@domain.com)');
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
+      setErrorMsg('กรุณากรอกอีเมลและรหัสผ่านให้ครบถ้วน');
       return;
     }
 
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      // Determine if demo user or new user
-      const matched = DEMO_USERS.find((u) => u.email.toLowerCase() === email.toLowerCase());
-      if (matched) {
-        onLoginSuccess(matched);
+    if (authMode === 'register' && password.length < 6) {
+      setErrorMsg('รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร');
+      return;
+    }
+
+    setLoadingTarget('email');
+    try {
+      if (authMode === 'register') {
+        const cred = await createUserWithEmailAndPassword(auth, trimmedEmail, password);
+        if (fullName.trim()) {
+          await updateProfile(cred.user, { displayName: fullName.trim() });
+        }
+        await sendEmailVerification(cred.user);
+        setInfoMsg('สร้างบัญชีสำเร็จแล้ว กรุณาคลิกลิงก์ยืนยันในอีเมลของคุณก่อนเข้าใช้งาน');
       } else {
-        const newUser: UserProfile = {
-          id: `user-${Date.now()}`,
-          name: fullName.trim() || 'ผู้ใช้งาน',
-          email: email.trim(),
-          hn: `67-${Math.floor(100000 + Math.random() * 900000)}`,
-          nationalId: '1-1004-98765-43-2',
-          age: 30,
-          gender: 'ชาย',
-          bloodType: 'O',
-          heightCm: 170,
-          weightKg: 65,
-          bmi: 22.5,
-          drugAllergies: ['ไม่มีประวัติแพ้ยา'],
-          chronicDiseases: ['ไม่มี'],
-          medicalRight: 'สิทธิหลักประกันสุขภาพถ้วนหน้า (บัตรทอง)',
-          assignedHospital: 'โรงพยาบาลราชพิพัฒน์',
-          secondaryHospital: 'โรงพยาบาลศิริราช (รับส่งต่อ)',
-          emergencyContact: {
-            name: 'ผู้ติดต่อฉุกเฉิน',
-            relationship: 'ครอบครัว',
-            phone: '081-234-5678',
-          },
-          avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(email)}`,
-        };
-        onLoginSuccess(newUser);
+        await signInWithEmailAndPassword(auth, trimmedEmail, password);
       }
-    }, 600);
+    } catch (err) {
+      setErrorMsg(mapFirebaseAuthError(err, 'อีเมล'));
+    } finally {
+      setLoadingTarget(null);
+    }
   };
 
-  // Google account selection
-  const handleGoogleSelect = (user: UserProfile) => {
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      onLoginSuccess(user);
-    }, 600);
+  const handleForgotPassword = async () => {
+    setErrorMsg('');
+    setInfoMsg('');
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      setErrorMsg('กรุณากรอกอีเมลที่ต้องการรีเซ็ตรหัสผ่านก่อน');
+      return;
+    }
+    setLoadingTarget('reset');
+    try {
+      await sendPasswordResetEmail(auth, trimmedEmail);
+      setInfoMsg(`ส่งลิงก์ตั้งรหัสผ่านใหม่ไปยัง ${trimmedEmail} เรียบร้อยแล้ว`);
+    } catch (err) {
+      setErrorMsg(mapFirebaseAuthError(err, 'อีเมล'));
+    } finally {
+      setLoadingTarget(null);
+    }
   };
 
-  // Apple login simulation
-  const handleAppleLogin = () => {
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      const appleUser: UserProfile = {
-        id: `apple-user-${Date.now()}`,
-        name: 'ผู้ใช้งาน',
-        email: 'user.apple@privaterelay.appleid.com',
-        hn: '67-009412',
-        nationalId: '1-1004-98765-43-2',
-        age: 28,
-        gender: 'ชาย',
-        bloodType: 'O',
-        heightCm: 175,
-        weightKg: 68,
-        bmi: 22.2,
-        drugAllergies: ['ไม่มีประวัติแพ้ยา'],
-        chronicDiseases: ['ไม่มี'],
-        medicalRight: 'สิทธิหลักประกันสุขภาพถ้วนหน้า (บัตรทอง)',
-        assignedHospital: 'โรงพยาบาลราชพิพัฒน์',
-        secondaryHospital: 'โรงพยาบาลศิริราช (รับส่งต่อ)',
-        emergencyContact: {
-          name: 'ผู้ติดต่อฉุกเฉิน',
-          relationship: 'ครอบครัว',
-          phone: '081-234-5678',
-        },
-        avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=AppleUser',
-      };
-      onLoginSuccess(appleUser);
-    }, 600);
+  const handleSocialLogin = async (channel: SocialChannel) => {
+    setErrorMsg('');
+    setInfoMsg('');
+    setLoadingTarget(channel);
+
+    let provider: AuthProvider;
+    let channelLabel = 'Google';
+
+    if (channel === 'google') {
+      provider = googleProvider;
+      channelLabel = 'Google';
+    } else if (channel === 'facebook') {
+      const fbProvider = new FacebookAuthProvider();
+      fbProvider.addScope('email');
+      provider = fbProvider;
+      channelLabel = 'Facebook';
+    } else if (channel === 'apple') {
+      const appleProvider = new OAuthProvider('apple.com');
+      appleProvider.addScope('email');
+      appleProvider.addScope('name');
+      provider = appleProvider;
+      channelLabel = 'Apple';
+    } else {
+      const lineProvider = new OAuthProvider('oidc.line');
+      lineProvider.addScope('openid');
+      lineProvider.addScope('profile');
+      lineProvider.addScope('email');
+      provider = lineProvider;
+      channelLabel = 'LINE';
+    }
+
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (err) {
+      setErrorMsg(mapFirebaseAuthError(err, channelLabel));
+    } finally {
+      setLoadingTarget(null);
+    }
   };
 
-  // LINE login simulation
-  const handleLineLogin = () => {
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      const lineUser: UserProfile = {
-        id: `line-user-${Date.now()}`,
-        name: 'ผู้ใช้งาน',
-        email: 'line.user@line.me',
-        hn: '67-009412',
-        nationalId: '1-1004-98765-43-2',
-        age: 29,
-        gender: 'หญิง',
-        bloodType: 'B',
-        heightCm: 162,
-        weightKg: 52,
-        bmi: 19.8,
-        drugAllergies: ['ไม่มีประวัติแพ้ยา'],
-        chronicDiseases: ['ไม่มี'],
-        medicalRight: 'สิทธิหลักประกันสุขภาพถ้วนหน้า (บัตรทอง)',
-        assignedHospital: 'โรงพยาบาลราชพิพัฒน์',
-        emergencyContact: {
-          name: 'ผู้ติดต่อฉุกเฉิน',
-          relationship: 'ครอบครัว',
-          phone: '089-876-5432',
-        },
-        avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=LineUser',
-      };
-      onLoginSuccess(lineUser);
-    }, 600);
+  const handleResendVerification = async () => {
+    if (!pendingVerificationUser) return;
+    setErrorMsg('');
+    setInfoMsg('');
+    setLoadingTarget('resend');
+    try {
+      await sendEmailVerification(pendingVerificationUser);
+      setInfoMsg(`ส่งอีเมลยืนยันไปยัง ${pendingVerificationUser.email} อีกครั้งแล้ว กรุณาตรวจสอบกล่องจดหมายหรือโฟลเดอร์สแปม`);
+    } catch (err) {
+      setErrorMsg(mapFirebaseAuthError(err, 'ยืนยันอีเมล'));
+    } finally {
+      setLoadingTarget(null);
+    }
   };
 
-  // Facebook login simulation
-  const handleFacebookLogin = () => {
-    setIsLoading(true);
-    setTimeout(() => {
-      setIsLoading(false);
-      const fbUser: UserProfile = {
-        id: `fb-user-${Date.now()}`,
-        name: 'ผู้ใช้งาน',
-        email: 'user.fb@facebook.com',
-        hn: '67-009412',
-        nationalId: '1-1004-98765-43-2',
-        age: 31,
-        gender: 'ชาย',
-        bloodType: 'O',
-        heightCm: 172,
-        weightKg: 66,
-        bmi: 22.3,
-        drugAllergies: ['ไม่มีประวัติแพ้ยา'],
-        chronicDiseases: ['ไม่มี'],
-        medicalRight: 'สิทธิหลักประกันสุขภาพถ้วนหน้า (บัตรทอง)',
-        assignedHospital: 'โรงพยาบาลราชพิพัฒน์',
-        emergencyContact: {
-          name: 'ผู้ติดต่อฉุกเฉิน',
-          relationship: 'ครอบครัว',
-          phone: '081-234-5678',
-        },
-        avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=FbUser',
-      };
-      onLoginSuccess(fbUser);
-    }, 600);
+  const handleCheckVerified = async () => {
+    if (!pendingVerificationUser) return;
+    setErrorMsg('');
+    setInfoMsg('');
+    setLoadingTarget('check');
+    try {
+      await pendingVerificationUser.reload();
+      if (auth.currentUser?.emailVerified) {
+        await onVerificationConfirmed?.();
+      } else {
+        setErrorMsg('ยังไม่พบการยืนยันอีเมล กรุณาเปิดอีเมลและคลิกลิงก์ยืนยันก่อนกดปุ่มนี้อีกครั้ง');
+      }
+    } catch {
+      setErrorMsg('ไม่สามารถตรวจสอบสถานะยืนยันอีเมลได้ในขณะนี้');
+    } finally {
+      setLoadingTarget(null);
+    }
   };
+
+  const handleSignOutPending = async () => {
+    setErrorMsg('');
+    setInfoMsg('');
+    await signOut(auth);
+  };
+
+  const displayError = errorMsg || externalError;
 
   return (
-    <div className="relative min-h-full h-full flex flex-col justify-between bg-gradient-to-b from-[#113824] via-[#16472f] to-[#0f2e21] text-white select-none overflow-hidden">
+    <div className="relative min-h-full h-full flex flex-col justify-between bg-gradient-to-b from-[#113824] via-[#16472f] to-[#0f2e21] text-white select-none overflow-y-auto no-scrollbar">
       {/* Background ambient lighting */}
       <div className="absolute top-10 left-1/2 -translate-x-1/2 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
 
-      {/* Top Header exactly matching Screenshot 120040 */}
-      <div className="pt-12 sm:pt-16 pb-6 px-6 text-center flex flex-col items-center justify-center relative z-10">
-        {/* The + App Logo */}
-        <div className="w-20 h-20 rounded-[26px] bg-white text-emerald-950 shadow-2xl flex items-center justify-center mb-4 transition transform hover:scale-105 border border-white/90">
-          <Plus className="w-11 h-11 text-slate-800 stroke-[3.5]" />
+      {/* Top Header with Centered Realistic Inotector Care Logo */}
+      <div className="pt-10 sm:pt-12 pb-5 px-6 w-full text-center flex flex-col items-center justify-center relative z-10 shrink-0">
+        <div className="w-[84px] h-[84px] rounded-[25px] bg-gradient-to-b from-white via-[#f8fcfa] to-[#eaf4ef] shadow-[0_18px_40px_rgba(0,0,0,0.38),inset_0_1.5px_1px_rgba(255,255,255,1)] ring-1 ring-white/90 flex items-center justify-center mx-auto mb-3.5 transition-transform duration-200 hover:scale-105">
+          <InotectorIcon size={54} />
         </div>
 
-        <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white font-heading">
+        <h1 className="text-2xl font-extrabold tracking-tight text-white font-heading text-center">
           Inotector Care
         </h1>
-        <p className="text-xs sm:text-sm text-[#bcd9c9] font-medium mt-1">
-          AI Smart Triage System
+        <p className="text-xs text-[#bcd9c9] font-medium mt-1 text-center">
+          ระบบคัดกรองอาการ &amp; นำทางสถานพยาบาลอัจฉริยะ
         </p>
       </div>
 
-      {/* Bottom Container Card matching Screenshot 120040 */}
+      {/* Bottom White Sheet */}
       <div className="relative z-20 flex-1 flex flex-col justify-end">
-        <div className="bg-white text-slate-800 rounded-t-[36px] shadow-[0_-12px_45px_rgba(0,0,0,0.5)] p-6 sm:p-7 space-y-4 animate-in slide-in-from-bottom duration-300">
-          {/* Card Title & Subtitle */}
-          <div className="text-center space-y-1">
-            <div className="flex items-center justify-center gap-2">
-              <h2 className="text-xl font-extrabold font-heading text-slate-900">
-                {isSignUp ? 'Create an account' : 'Sign in to account'}
-              </h2>
-            </div>
-            <p className="text-xs text-slate-500">
-              {isSignUp ? 'Enter your email to sign up for this app' : 'Enter your email to continue'}
-            </p>
-          </div>
-
-          {/* Email input form matching Screenshot */}
-          <form onSubmit={handleEmailSubmit} className="space-y-3 pt-1">
-            {errorMsg && (
-              <div className="p-2.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-1.5">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{errorMsg}</span>
+        <div className="bg-white text-slate-800 rounded-t-[36px] shadow-[0_-12px_45px_rgba(0,0,0,0.5)] p-5 sm:p-6 space-y-4 animate-in slide-in-from-bottom duration-300">
+          {pendingVerificationUser ? (
+            <div className="space-y-4 py-2">
+              <div className="text-center space-y-1.5">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center mx-auto border border-emerald-200">
+                  <Mail className="w-6 h-6" />
+                </div>
+                <h2 className="text-lg font-extrabold font-heading text-slate-900">
+                  ยืนยันอีเมลก่อนเข้าใช้งาน
+                </h2>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  เราได้ส่งลิงก์ยืนยันตัวตนไปยัง{' '}
+                  <strong className="text-slate-800">{pendingVerificationUser.email}</strong> แล้ว
+                  เพื่อความปลอดภัยของข้อมูลสุขภาพของคุณ
+                </p>
               </div>
-            )}
 
-            <div>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  if (errorMsg) setErrorMsg('');
-                }}
-                placeholder="email@domain.com"
-                className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-white text-slate-900 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#1c4c39] focus:border-transparent transition shadow-xs"
-              />
-            </div>
-
-            {/* Continue Button */}
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full bg-[#1c4c39] hover:bg-[#153c2c] active:scale-[0.99] text-white font-bold py-3.5 px-4 rounded-2xl shadow-md text-sm font-heading flex items-center justify-center gap-2 cursor-pointer transition disabled:opacity-50"
-            >
-              {isLoading ? (
-                <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              ) : (
-                <span>Continue</span>
+              {displayError && (
+                <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{displayError}</span>
+                </div>
               )}
-            </button>
-          </form>
 
-          {/* Divider "or" */}
-          <div className="relative flex items-center justify-center py-0.5">
-            <div className="border-t border-slate-200 w-full" />
-            <span className="bg-white px-3 text-xs text-slate-400 font-medium">or</span>
-          </div>
+              {infoMsg && (
+                <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{infoMsg}</span>
+                </div>
+              )}
 
-          {/* Social Auth Buttons matching Screenshot_20261101_161202_Chrome.jpg: Google, Apple, LINE, Facebook */}
-          <div className="space-y-2.5">
-            {/* Continue with Google */}
-            <button
-              type="button"
-              onClick={() => setActiveModal('google')}
-              className="w-full py-3 px-4 rounded-2xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 font-semibold text-xs sm:text-sm font-heading flex items-center justify-center gap-3 transition cursor-pointer shadow-xs active:scale-[0.99]"
-            >
-              <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-              </svg>
-              <span>Continue with Google</span>
-            </button>
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={() => void handleCheckVerified()}
+                  disabled={loadingTarget !== null}
+                  className="w-full py-3 px-4 rounded-2xl bg-[#163d2d] hover:bg-[#113124] text-white font-bold text-xs font-heading flex items-center justify-center gap-2 transition cursor-pointer shadow-sm disabled:opacity-60"
+                >
+                  <RefreshCw className={`w-4 h-4 ${loadingTarget === 'check' ? 'animate-spin' : ''}`} />
+                  <span>ฉันคลิกยืนยันในอีเมลแล้ว (เข้าสู่ระบบ)</span>
+                </button>
 
-            {/* Continue with Apple */}
-            <button
-              type="button"
-              onClick={handleAppleLogin}
-              className="w-full py-3 px-4 rounded-2xl bg-[#0f172a] hover:bg-[#1e293b] text-white font-semibold text-xs sm:text-sm font-heading flex items-center justify-center gap-2.5 transition cursor-pointer shadow-xs active:scale-[0.99]"
-            >
-              <svg className="w-4 h-4 fill-white shrink-0" viewBox="0 0 170 170">
-                <path d="M150.37 130.25c-2.45 5.66-5.35 10.87-8.71 15.66-4.58 6.53-8.33 11.05-11.22 13.56-4.48 4.12-9.28 6.23-14.42 6.35-3.69 0-8.14-1.05-13.32-3.18-5.19-2.12-9.97-3.17-14.34-3.17-4.58 0-9.49 1.05-14.75 3.17-5.26 2.13-9.5 3.24-12.74 3.35-4.35.13-9.16-1.9-14.42-6.08-3.7-3.04-7.66-7.79-11.87-14.23-7.52-11.41-13.19-24.58-17.02-39.5-3.83-14.92-5.75-28.7-5.75-41.34 0-14.59 3.37-26.68 10.12-36.27 6.74-9.59 15.54-14.49 26.39-14.7 4.8 0 10.12 1.25 15.96 3.75 5.85 2.5 9.77 3.86 11.77 4.08 2.45-.43 6.64-1.89 12.57-4.38 5.93-2.49 11.02-3.64 15.26-3.46 11.64.65 20.89 4.89 27.76 12.71-9.9 6-14.74 14.37-14.53 25.13.22 8.49 3.47 15.68 9.77 21.57 6.3 5.88 13.82 9.29 22.56 10.22-2.18 6.75-4.8 13.62-7.85 20.61zM119.22 31.86c0-7.39 2.65-14.45 7.96-21.17 5.3-6.73 11.87-10.69 19.7-11.89.22 1.09.33 2.18.33 3.27 0 7.39-2.73 14.34-8.17 20.84-5.45 6.5-12 10.42-19.64 11.77-.07-.94-.18-1.88-.18-2.82z" />
-              </svg>
-              <span>Continue with Apple</span>
-            </button>
+                <button
+                  type="button"
+                  onClick={() => void handleResendVerification()}
+                  disabled={loadingTarget !== null}
+                  className="w-full py-2.5 px-4 rounded-2xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold text-xs font-heading transition cursor-pointer disabled:opacity-60"
+                >
+                  {loadingTarget === 'resend' ? 'กำลังส่งอีเมล...' : 'ส่งลิงก์ยืนยันอีเมลอีกครั้ง'}
+                </button>
 
-            {/* Continue with LINE */}
-            <button
-              type="button"
-              onClick={handleLineLogin}
-              className="w-full py-3 px-4 rounded-2xl bg-[#06C755] hover:bg-[#05b34c] text-white font-semibold text-xs sm:text-sm font-heading flex items-center justify-center gap-2.5 transition cursor-pointer shadow-xs active:scale-[0.99]"
-            >
-              <div className="w-5 h-5 rounded-full bg-white flex items-center justify-center shrink-0">
-                <span className="text-[#06C755] font-extrabold text-[9px] tracking-tighter">LINE</span>
+                <button
+                  type="button"
+                  onClick={() => void handleSignOutPending()}
+                  className="w-full py-2 text-xs text-slate-500 hover:text-slate-800 font-medium cursor-pointer"
+                >
+                  กลับไปเลือกวิธีเข้าสู่ระบบอื่น
+                </button>
               </div>
-              <span>Continue with LINE</span>
-            </button>
-
-            {/* Continue with Facebook */}
-            <button
-              type="button"
-              onClick={handleFacebookLogin}
-              className="w-full py-3 px-4 rounded-2xl bg-[#1877F2] hover:bg-[#166fe5] text-white font-semibold text-xs sm:text-sm font-heading flex items-center justify-center gap-2.5 transition cursor-pointer shadow-xs active:scale-[0.99]"
-            >
-              <svg className="w-4 h-4 fill-white shrink-0" viewBox="0 0 24 24">
-                <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-              </svg>
-              <span>Continue with Facebook</span>
-            </button>
-          </div>
-
-          {/* Toggle between Create Account / Sign In */}
-          <div className="text-center pt-1">
-            <button
-              type="button"
-              onClick={() => setIsSignUp(!isSignUp)}
-              className="text-xs text-emerald-800 font-semibold hover:underline cursor-pointer"
-            >
-              {isSignUp
-                ? 'มีบัญชีอยู่แล้ว? เข้าสู่ระบบที่นี่'
-                : 'ยังไม่มีบัญชี? สมัครสมาชิกใหม่'}
-            </button>
-          </div>
-
-          {/* Legal Terms Footer matching Screenshot_20261101_161202_Chrome.jpg */}
-          <p className="text-[11px] text-slate-400 text-center leading-relaxed pt-1">
-            การดำเนินการต่อถือว่าคุณยอมรับข้อกำหนดและนโยบายความเป็นส่วนตัว
-          </p>
-        </div>
-      </div>
-
-      {/* ================= GOOGLE ACCOUNT CHOOSER SHEET MODAL ================= */}
-      {activeModal === 'google' && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="bg-white w-full max-w-sm rounded-t-[32px] sm:rounded-[32px] shadow-2xl p-6 text-slate-800 animate-in slide-in-from-bottom duration-200">
-            {/* Google Colorful G Logo */}
-            <div className="text-center mb-4 relative">
-              <button
-                type="button"
-                onClick={() => setActiveModal('none')}
-                className="absolute top-0 right-0 w-8 h-8 rounded-full hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition"
-              >
-                <X className="w-4 h-4" />
-              </button>
-
-              <svg className="w-8 h-8 mx-auto mb-2" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-              </svg>
-              <h3 className="font-heading font-bold text-base text-slate-900">เลือกบัญชี</h3>
-              <p className="text-xs text-slate-500 mt-0.5">เพื่อดำเนินการต่อไปยัง Inotector Care</p>
             </div>
-
-            {isLoading ? (
-              <div className="py-8 space-y-2 text-center">
-                <div className="w-7 h-7 border-3 border-emerald-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-                <p className="text-xs text-slate-500 font-medium">กำลังเข้าสู่ระบบ...</p>
-              </div>
-            ) : (
-              <div className="space-y-1 divide-y divide-slate-100">
-                {/* Account 1: Blue circle with 'ผ' -> ผู้ใช้งาน */}
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleGoogleSelect({
-                      ...DEMO_USERS[0],
-                      name: 'ผู้ใช้งาน',
-                    })
-                  }
-                  className="w-full py-3 px-2 flex items-center gap-3 hover:bg-slate-50 rounded-2xl transition cursor-pointer text-left"
-                >
-                  <div className="w-10 h-10 rounded-full bg-[#1a73e8] text-white font-bold flex items-center justify-center text-sm shrink-0">
-                    ผ
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-heading font-bold text-xs sm:text-sm text-slate-900 leading-tight">
-                      ผู้ใช้งาน Inotector
-                    </p>
-                    <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                      user.demo@gmail.com
-                    </p>
-                  </div>
-                </button>
-
-                {/* Account 2: Green circle with 'ส' -> สมชาย ใจดี */}
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleGoogleSelect({
-                      ...DEMO_USERS[0],
-                      name: 'สมชาย ใจดี',
-                    })
-                  }
-                  className="w-full py-3 px-2 flex items-center gap-3 hover:bg-slate-50 rounded-2xl transition cursor-pointer text-left"
-                >
-                  <div className="w-10 h-10 rounded-full bg-[#188038] text-white font-bold flex items-center justify-center text-sm shrink-0">
-                    ส
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-heading font-bold text-xs sm:text-sm text-slate-900 leading-tight">
-                      สมชาย ใจดี
-                    </p>
-                    <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                      somchai.jaidee@gmail.com
-                    </p>
-                  </div>
-                </button>
-
-                {/* Use Another Account Row */}
+          ) : (
+            <>
+              {/* Mode Switcher Tabs: Login / Register */}
+              <div className="flex bg-slate-100 p-1 rounded-2xl text-xs font-heading">
                 <button
                   type="button"
                   onClick={() => {
-                    setActiveModal('none');
-                    setEmail('');
+                    setAuthMode('login');
+                    setErrorMsg('');
+                    setInfoMsg('');
                   }}
-                  className="w-full py-3 px-2 flex items-center gap-3 hover:bg-slate-50 rounded-2xl transition cursor-pointer text-left"
+                  className={`flex-1 py-2 rounded-xl font-bold transition cursor-pointer ${
+                    authMode === 'login'
+                      ? 'bg-white text-emerald-900 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
                 >
-                  <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
-                    <User className="w-5 h-5 text-slate-600" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="font-heading font-bold text-xs sm:text-sm text-slate-900 leading-tight">
-                      ใช้บัญชีอื่น (กรอกอีเมล)
-                    </p>
-                  </div>
+                  เข้าสู่ระบบ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('register');
+                    setErrorMsg('');
+                    setInfoMsg('');
+                  }}
+                  className={`flex-1 py-2 rounded-xl font-bold transition cursor-pointer ${
+                    authMode === 'register'
+                      ? 'bg-white text-emerald-900 shadow-xs'
+                      : 'text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  สมัครสมาชิกด้วยอีเมล
                 </button>
               </div>
-            )}
 
-            <div className="mt-4 pt-3 border-t border-slate-100 text-center">
-              <button
-                type="button"
-                onClick={() => setActiveModal('none')}
-                className="text-xs font-semibold text-slate-500 hover:text-slate-800 cursor-pointer"
-              >
-                ยกเลิก
-              </button>
-            </div>
-          </div>
+              {displayError && (
+                <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2 leading-relaxed">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{displayError}</span>
+                </div>
+              )}
+
+              {infoMsg && (
+                <div className="p-3 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs flex items-start gap-2 leading-relaxed">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{infoMsg}</span>
+                </div>
+              )}
+
+              {/* Email / Password Form */}
+              <form onSubmit={(e) => void handleEmailAuth(e)} className="space-y-3 text-xs">
+                {authMode === 'register' && (
+                  <div>
+                    <label className="font-bold text-slate-700 block mb-1 font-heading">
+                      ชื่อ - นามสกุล
+                    </label>
+                    <div className="relative">
+                      <UserIcon className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                      <input
+                        type="text"
+                        value={fullName}
+                        onChange={(e) => setFullName(e.target.value)}
+                        placeholder="เช่น สมใจ รักสุขภาพ"
+                        className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/30 focus:border-emerald-600"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="font-bold text-slate-700 block mb-1 font-heading">อีเมล</label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="name@example.com"
+                      autoComplete="email"
+                      className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/30 focus:border-emerald-600"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-700 font-heading">รหัสผ่าน</label>
+                    {authMode === 'login' && (
+                      <button
+                        type="button"
+                        onClick={() => void handleForgotPassword()}
+                        className="text-[11px] text-emerald-700 font-semibold hover:underline cursor-pointer"
+                      >
+                        ลืมรหัสผ่าน?
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={authMode === 'register' ? 'อย่างน้อย 6 ตัวอักษร' : 'กรอกรหัสผ่านของคุณ'}
+                      autoComplete={authMode === 'register' ? 'new-password' : 'current-password'}
+                      className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-slate-900 font-medium focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-600/30 focus:border-emerald-600"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
+                      tabIndex={-1}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loadingTarget !== null}
+                  className="w-full py-3 px-4 rounded-2xl bg-[#163d2d] hover:bg-[#113124] active:scale-[0.99] text-white font-bold text-sm font-heading transition cursor-pointer shadow-md disabled:opacity-60 flex items-center justify-center gap-2"
+                >
+                  {loadingTarget === 'email' ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>กำลังดำเนินการ...</span>
+                    </>
+                  ) : (
+                    <span>
+                      {authMode === 'register' ? 'สมัครสมาชิกและส่งอีเมลยืนยัน' : 'เข้าสู่ระบบด้วยอีเมล'}
+                    </span>
+                  )}
+                </button>
+              </form>
+
+              {/* Divider */}
+              <div className="relative flex items-center py-0.5">
+                <div className="flex-grow border-t border-slate-200" />
+                <span className="shrink mx-3 text-[11px] font-medium text-slate-400">
+                  หรือเข้าสู่ระบบด้วยบัญชีโซเชียล
+                </span>
+                <div className="flex-grow border-t border-slate-200" />
+              </div>
+
+              {/* Social Sign-In Buttons (1 button per row, stacked vertically) */}
+              <div className="flex flex-col gap-2.5">
+                {/* Google */}
+                <button
+                  type="button"
+                  onClick={() => void handleSocialLogin('google')}
+                  disabled={loadingTarget !== null}
+                  className="w-full py-3 px-4 rounded-2xl border border-slate-300 bg-white hover:bg-slate-50 active:scale-[0.99] text-slate-900 font-bold text-xs sm:text-sm font-heading flex items-center justify-center gap-2.5 transition cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  {loadingTarget === 'google' ? (
+                    <div className="w-4 h-4 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-4.5 h-4.5 shrink-0" viewBox="0 0 24 24">
+                      <path
+                        fill="#4285F4"
+                        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                      />
+                      <path
+                        fill="#34A853"
+                        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                      />
+                      <path
+                        fill="#FBBC05"
+                        d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                      />
+                      <path
+                        fill="#EA4335"
+                        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+                      />
+                    </svg>
+                  )}
+                  <span>ดำเนินการต่อด้วย Google</span>
+                </button>
+
+                {/* LINE */}
+                <button
+                  type="button"
+                  onClick={() => void handleSocialLogin('line')}
+                  disabled={loadingTarget !== null}
+                  className="w-full py-3 px-4 rounded-2xl bg-[#06C755] hover:brightness-95 active:scale-[0.99] text-white font-bold text-xs sm:text-sm font-heading flex items-center justify-center gap-2.5 transition cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  {loadingTarget === 'line' ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-4.5 h-4.5 fill-white shrink-0" viewBox="0 0 24 24">
+                      <path d="M19.365 9.863c.349 0 .63.285.63.631 0 .345-.281.63-.63.63H17.61v1.125h1.755c.349 0 .63.283.63.63 0 .344-.281.629-.63.629h-2.386c-.345 0-.627-.285-.627-.629V8.108c0-.345.282-.63.63-.63h2.386c.346 0 .627.285.627.63 0 .349-.281.63-.63.63H17.61v1.125h1.755zm-3.855 3.016c0 .27-.174.51-.432.596-.064.021-.133.031-.199.031-.211 0-.391-.09-.51-.25l-2.443-3.317v2.94c0 .344-.279.629-.631.629-.346 0-.626-.285-.626-.629V8.108c0-.27.173-.51.43-.595.06-.023.136-.033.194-.033.195 0 .375.104.495.254l2.462 3.33V8.108c0-.345.282-.63.63-.63.345 0 .63.285.63.63v4.771zm-5.741 0c0 .344-.282.629-.631.629-.345 0-.627-.285-.627-.629V8.108c0-.345.282-.63.63-.63.346 0 .628.285.628.63v4.771zm-2.466.629H4.917c-.345 0-.63-.285-.63-.629V8.108c0-.345.285-.63.63-.63.348 0 .63.285.63.63v4.141h1.756c.348 0 .629.283.629.63 0 .344-.282.629-.629.629M24 10.314C24 4.943 18.615.572 12 .572S0 4.943 0 10.314c0 4.811 4.27 8.842 10.035 9.608.391.082.923.258 1.058.59.12.301.079.766.038 1.08l-.164 1.02c-.045.301-.24 1.186 1.049.645 1.291-.539 6.916-4.078 9.436-6.975C23.176 14.393 24 12.458 24 10.314" />
+                    </svg>
+                  )}
+                  <span>ดำเนินการต่อด้วย LINE</span>
+                </button>
+
+                {/* Facebook */}
+                <button
+                  type="button"
+                  onClick={() => void handleSocialLogin('facebook')}
+                  disabled={loadingTarget !== null}
+                  className="w-full py-3 px-4 rounded-2xl bg-[#1877F2] hover:brightness-95 active:scale-[0.99] text-white font-bold text-xs sm:text-sm font-heading flex items-center justify-center gap-2.5 transition cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  {loadingTarget === 'facebook' ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-4.5 h-4.5 fill-white shrink-0" viewBox="0 0 24 24">
+                      <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
+                    </svg>
+                  )}
+                  <span>ดำเนินการต่อด้วย Facebook</span>
+                </button>
+
+                {/* Apple */}
+                <button
+                  type="button"
+                  onClick={() => void handleSocialLogin('apple')}
+                  disabled={loadingTarget !== null}
+                  className="w-full py-3 px-4 rounded-2xl bg-slate-950 hover:bg-slate-800 active:scale-[0.99] text-white font-bold text-xs sm:text-sm font-heading flex items-center justify-center gap-2.5 transition cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  {loadingTarget === 'apple' ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <svg className="w-4.5 h-4.5 fill-white shrink-0" viewBox="0 0 24 24">
+                      <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z" />
+                    </svg>
+                  )}
+                  <span>ดำเนินการต่อด้วย Apple</span>
+                </button>
+              </div>
+
+              <p className="text-[10.5px] text-slate-400 text-center leading-relaxed pt-0.5">
+                ยืนยันตัวตนด้วย Firebase Authentication • การเข้าสู่ระบบถือว่ายอมรับเงื่อนไขและนโยบาย PDPA
+              </p>
+            </>
+          )}
         </div>
-      )}
+      </div>
     </div>
   );
 };
